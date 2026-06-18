@@ -1,15 +1,11 @@
-import { Zap, Shield, Smartphone, Sliders, Play, Music, Image as ImageIcon, CheckCircle2 } from "lucide-react";
+import { Zap, Droplets, Shield, Smartphone } from "lucide-react";
 
 export function FeaturesSection() {
   const features = [
     { icon: Zap, title: "Lightning Fast", desc: "Download videos in seconds with our optimized servers and dedicated CDN." },
-    { icon: Shield, title: "No Watermark", desc: "Get original quality videos without any annoying logos or watermarks." },
-    { icon: CheckCircle2, title: "No Login Required", desc: "Start downloading immediately. No accounts, no subscriptions." },
-    { icon: Smartphone, title: "Mobile Friendly", desc: "Works perfectly on iOS and Android devices without any apps." },
+    { icon: Droplets, title: "No Watermark", desc: "Get original quality videos without any annoying logos or watermarks." },
     { icon: Shield, title: "100% Safe & Secure", desc: "No malware, no popup ads, and we don't store your downloads." },
-    { icon: Sliders, title: "Multiple Quality Options", desc: "Choose from 360p up to 4K Ultra HD depending on availability." },
-    { icon: Music, title: "MP3 Extraction", desc: "Extract high-quality audio directly from videos with one click." },
-    { icon: ImageIcon, title: "Thumbnail Download", desc: "Grab the cover image of any video in full resolution easily." },
+    { icon: Smartphone, title: "Mobile Friendly", desc: "Works perfectly on iOS and Android devices without any apps." },
   ];
 
   return (
