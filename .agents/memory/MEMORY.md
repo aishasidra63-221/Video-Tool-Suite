@@ -1,0 +1,1 @@
+- [yt-dlp platform quirks](yt-dlp-platform-quirks.md) — YouTube audio acodec=null, TikTok blocked, Facebook no height, HLS routing
