@@ -33,14 +33,35 @@ function detectPlatform(url: string): string {
 }
 
 /** Base flags always applied to every yt-dlp call */
-const BASE_FLAGS = "--no-playlist --no-warnings --socket-timeout 30 --geo-bypass";
+const BASE_FLAGS = "--no-playlist --no-warnings --socket-timeout 20 --no-check-formats";
 
-/** Fallback player clients tried in order when YouTube blocks the default */
-const YT_FALLBACK_CLIENTS = [
+/** YouTube clients: android is fastest, web gives best quality */
+const YT_ANDROID_FLAG = '--extractor-args "youtube:player_client=android"';
+const YT_WEB_FALLBACKS = [
+  "",  // default web client
   '--extractor-args "youtube:player_client=ios"',
   '--extractor-args "youtube:player_client=tv_embedded"',
-  '--extractor-args "youtube:player_client=android"',
 ];
+
+// ── Simple in-memory cache (5 min TTL) ────────────────────────────────────
+interface CacheEntry { data: string; expiresAt: number; }
+const infoCache = new Map<string, CacheEntry>();
+const CACHE_TTL_MS = 5 * 60 * 1000;
+
+function getCached(key: string): string | null {
+  const entry = infoCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) { infoCache.delete(key); return null; }
+  return entry.data;
+}
+function setCache(key: string, data: string) {
+  infoCache.set(key, { data, expiresAt: Date.now() + CACHE_TTL_MS });
+  // Prevent unbounded growth
+  if (infoCache.size > 200) {
+    const oldest = infoCache.keys().next().value;
+    if (oldest) infoCache.delete(oldest);
+  }
+}
 
 function isValidUrl(url: string): boolean {
   try {
@@ -309,50 +330,62 @@ router.post("/info", async (req, res) => {
 
   const isYouTube = platform === "YouTube";
 
-  // ── Multi-step YouTube extraction ─────────────────────────────────────────
-  // Step 1: Try default (web client) → best quality
-  // Step 2+: If blocked, cycle through fallback player clients (ios, tv_embedded, android)
   const runInfo = async (extraFlags = ""): Promise<string> => {
     const cmd = `"${YTDLP_BIN}" --dump-json ${BASE_FLAGS} ${extraFlags} "${url}"`;
-    const { stdout } = await execAsync(cmd, { timeout: 60000 });
+    const { stdout } = await execAsync(cmd, { timeout: 35000 });
     return stdout;
   };
 
-  const isYtBlocked = (stderr: string) =>
-    stderr.includes("Sign in") ||
-    stderr.includes("bot") ||
-    stderr.includes("not a bot") ||
-    stderr.includes("not available on this app") ||
-    stderr.includes("not available in your country") ||
-    stderr.includes("No video formats found") ||
-    stderr.includes("Requested format is not available") ||
-    stderr.includes("YouTube is no longer supported");
-
   try {
+    // ── Check cache first ────────────────────────────────────────────────────
     let stdout: string;
-    try {
-      stdout = await runInfo(); // high-quality attempt first
-    } catch (firstErr) {
-      const firstStderr = ((firstErr as Error & { stderr?: string }).stderr || "");
-      if (isYouTube && isYtBlocked(firstStderr)) {
-        // Try each fallback client in order until one succeeds
-        let succeeded = false;
-        for (const clientFlag of YT_FALLBACK_CLIENTS) {
-          try {
-            req.log.info(`YouTube blocked — retrying with ${clientFlag}`);
-            stdout = await runInfo(clientFlag);
-            succeeded = true;
-            break;
-          } catch (retryErr) {
-            const retryStderr = ((retryErr as Error & { stderr?: string }).stderr || "");
-            if (!isYtBlocked(retryStderr)) throw retryErr; // non-blocking error, surface it
-            // else: keep trying next client
-          }
-        }
-        if (!succeeded) throw firstErr; // all clients failed
-      } else {
-        throw firstErr;
+    const cached = getCached(url);
+    if (cached) {
+      req.log.info("cache hit");
+      stdout = cached;
+    } else if (isYouTube) {
+      // ── Two-phase YouTube extraction ──────────────────────────────────────
+      // Phase 1: Race android (fast, reliable) vs web (slower, best quality)
+      //          Android wins on speed; web wins if it finishes within 3s of android
+      // Phase 2: If both fail, try remaining fallbacks (ios, tv_embedded)
+
+      // Build a promise that returns { stdout, formats } so we can pick best quality
+      const tryClient = async (flag: string) => {
+        const out = await runInfo(flag);
+        if (!out.trim()) throw new Error("empty output");
+        const info: YtDlpInfo = JSON.parse(out.trim().split("\n")[0]);
+        const fmtCount = (info.formats || []).filter(
+          (f) => f.height && f.height >= 720 && f.vcodec !== "none"
+        ).length;
+        return { stdout: out, fmtCount };
+      };
+
+      let bestResult: { stdout: string; fmtCount: number } | null = null;
+
+      // Start android + web simultaneously
+      const androidP = tryClient(YT_ANDROID_FLAG).catch(() => null);
+      const webFallbacksP = Promise.any(
+        YT_WEB_FALLBACKS.map((flag) => tryClient(flag))
+      ).catch(() => null);
+
+      // Wait up to 25s — take the result with more high-quality formats
+      const [androidResult, webResult] = await Promise.all([
+        androidP,
+        webFallbacksP,
+      ]);
+
+      if (webResult && (!androidResult || webResult.fmtCount >= androidResult.fmtCount)) {
+        bestResult = webResult;
+      } else if (androidResult) {
+        bestResult = androidResult;
       }
+
+      if (!bestResult) throw new AggregateError([], "All YouTube clients failed");
+      stdout = bestResult.stdout;
+      setCache(url, stdout);
+    } else {
+      stdout = await runInfo();
+      setCache(url, stdout);
     }
 
     const firstLine = stdout.trim().split("\n")[0];
@@ -368,16 +401,25 @@ router.post("/info", async (req, res) => {
       formats,
     });
   } catch (err) {
-    const error = err as Error & { stderr?: string };
-    const stderr = (error.stderr || error.message || "").slice(0, 400);
+    // Promise.any() throws AggregateError when ALL clients fail — collect all stderr messages
+    let stderr: string;
+    if (err instanceof AggregateError) {
+      stderr = err.errors
+        .map((e: Error & { stderr?: string }) => e.stderr || e.message || "")
+        .join(" ")
+        .slice(0, 600);
+    } else {
+      const error = err as Error & { stderr?: string };
+      stderr = (error.stderr || error.message || "").slice(0, 400);
+    }
     req.log.error({ err: stderr }, "yt-dlp info failed");
 
-    if (stderr.includes("Private") || stderr.includes("not available") || stderr.includes("unavailable")) {
-      res.status(422).json({ error: "This video is private or unavailable." });
-    } else if (stderr.includes("Sign in") || stderr.includes("log in") || stderr.includes("login")) {
+    if (stderr.includes("Sign in") || stderr.includes("log in") || stderr.includes("login")) {
       res.status(422).json({ error: "This video requires login and cannot be downloaded." });
+    } else if (stderr.includes("Private") || stderr.includes("not available") || stderr.includes("unavailable")) {
+      res.status(422).json({ error: "This video is private or unavailable." });
     } else if (stderr.includes("bot") || stderr.includes("verify") || stderr.includes("not available on this app") || stderr.includes("No video formats found")) {
-      res.status(422).json({ error: "YouTube is blocking this video from server access. Try a different video or a YouTube Shorts link." });
+      res.status(422).json({ error: "YouTube is blocking this video from server access. Try a different video." });
     } else if (stderr.includes("unsupported URL")) {
       res.status(422).json({ error: "URL not supported. Please use a direct video link." });
     } else if (platform === "TikTok") {
