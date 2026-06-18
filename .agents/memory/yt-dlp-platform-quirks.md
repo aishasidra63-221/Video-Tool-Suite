@@ -1,32 +1,61 @@
 ---
 name: yt-dlp platform quirks
-description: Per-platform yt-dlp behavior oddities that affect format detection and download routing
+description: Per-platform yt-dlp behavior oddities, YouTube HLS/quality strategy, download routing
 ---
 
-## YouTube
-- `--dump-json` audio-only formats (233, 234) return `acodec: null` (not `"mp4a.40.2"`)  
-- Filter `f.acodec && f.acodec !== "none"` misses them; detect by `vcodec === "none"` + no height instead
-- `--get-url` on video-only formats returns an HLS manifest (`manifest.googlevideo.com/api/manifest/hls_playlist/`) — NOT a direct mp4
-- **How to apply:** Always route YouTube video downloads through the stream endpoint (ffmpeg merge); never return CDN URL directly for YouTube
+## YouTube — High Quality (720p/1080p/4K)
+
+Server IPs only get **HLS m3u8 streams** for 720p+ (no PO token). Direct mp4 CDN links require PO tokens (real browser proof).
+
+**Why `--get-url` + ffmpeg fails for YouTube HLS:**
+YouTube HLS audio (format 234) uses non-standard AAC extension. ffmpeg rejects with "detected format aac extension mismatches allowed extensions" → ffmpeg exits code 183.
+
+**Fix: temp file approach with merger args:**
+```
+yt-dlp -f "formatId+bestaudio/best" --merge-output-format mkv
+  --no-check-formats
+  --postprocessor-args "merger:-allowed_extensions ALL"
+  -o /tmp/tmpfile.%(ext)s URL
+```
+- `--postprocessor-args "merger:-allowed_extensions ALL"` passes `-allowed_extensions ALL` to ffmpeg merger, bypassing the extension check
+- Download to temp file, stream to client with Content-Length, delete on close
+- This is necessary because stdout piping (`-o -`) fails for HLS video+audio merge
+
+**Client strategy:**
+- Default web client: 720p/1080p/4K as HLS — use for high quality
+- Android client (`--extractor-args "youtube:player_client=android"`): format 18, 360p combined mp4 — fallback for restricted videos
+- iOS, tv_embedded: intermediate fallbacks for info fetching
+
+**Audio stream (YouTube):**
+`--get-url` returns HLS manifest → ffmpeg fails. Fix: yt-dlp pipe directly:
+`yt-dlp -f "bestaudio[ext=m4a]/bestaudio" -x --audio-format mp3 --audio-quality Nk -o - URL`
+yt-dlp handles HLS auth internally for single-stream audio extraction.
+
+**DO NOT install yt-dlp-get-pot** without a running bgutil server — it breaks YouTube extraction.
+
+## YouTube audio-only formats
+- `acodec: null` (not `"mp4a.40.2"`) for formats 233, 234
+- Detect by `vcodec === "none"` + no height (not by acodec)
+
+## Android combined format (18)
+- Always 360p (640x360), ~46-102MB depending on length
+- Combined video+audio mp4 — no merge needed, direct CDN URL works
+- Accessible from server IPs without PO tokens
 
 ## TikTok
-- Completely blocked on server IPs; yt-dlp returns empty stdout (no JSON, no error to stderr)
-- **How to apply:** Detect empty output and return a user-friendly error about server-side restrictions
+- Blocked on server IPs; yt-dlp returns empty stdout (no JSON, no error)
+- Return user-friendly error about server-side restrictions
 
 ## Facebook
-- Formats return `format_id="hd"/"sd"` with `height=None`, `vcodec=None`, `acodec=None`
-- Height-based format detection produces 0 results; need fallback to match by format_id string ("hd"/"sd")
+- Formats: `format_id="hd"/"sd"` with `height=None`, `vcodec=None`
+- Height-based detection gives 0 results; match by format_id string instead
 
 ## Instagram
-- Combined format (id=8 typically) has `vcodec=null` (Python None → JSON null), not string "none"
-- Filter `f.vcodec && f.vcodec !== "none"` skips null; fix: include any format with `height > 0` and `vcodec !== "none"` string
-- `--get-url` returns direct CDN mp4 URL — safe to return to browser directly
+- Combined format has `vcodec=null` (JSON null), not string "none"
+- Include formats with `height > 0` regardless of vcodec string
+- `--get-url` returns direct CDN mp4 — safe to return to browser
 
-## Download routing rule
-- Direct CDN (Instagram, Facebook etc.) → return URL directly if NOT HLS (no `/manifest/` or `.m3u8`)
-- HLS or merged needed → use `/api/video/stream` endpoint (ffmpeg to MKV via matroska format)
-
-## Stream endpoint
-- For merged video+audio: `ffmpeg -i vidUrl -i audUrl -c:v copy -c:a aac -f matroska pipe:1`
-- For audio: `ffmpeg -i audioUrl -vn -c:a libmp3lame -b:a <bitrate>k -f mp3 pipe:1`
-- Output MKV (matroska) not mpegts — MKV is seekable and plays in all video players
+## Download routing
+- Direct CDN (non-HLS) → return URL directly to browser
+- HLS or merged → `/api/video/stream` (temp file → MKV → stream → cleanup)
+- YouTube: always use stream endpoint, never direct CDN return

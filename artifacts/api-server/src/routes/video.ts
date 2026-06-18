@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { exec, spawn } from "child_process";
 import { promisify } from "util";
-import { existsSync } from "fs";
+import { existsSync, statSync, createReadStream, unlink } from "fs";
 import { GetVideoInfoBody, GetDownloadUrlBody } from "@workspace/api-zod";
 
 const execAsync = promisify(exec);
@@ -607,46 +607,95 @@ router.get("/stream", async (req, res) => {
     return;
   }
 
-  // ── VIDEO → MKV (via ffmpeg) ──────────────────────────────────────────────
+  // ── VIDEO → MKV (via yt-dlp pipe) ───────────────────────────────────────
   res.setHeader("Content-Type", "video/x-matroska");
   res.setHeader("Content-Disposition", `attachment; filename="video.mkv"`);
 
   const isYtStream = /youtube\.com\/|youtu\.be\//.test(url);
 
-  // Helper: get CDN URLs, trying android then web for YouTube
-  const getCdnUrls = async (): Promise<string[]> => {
-    const fmtSelector = `${formatId}+bestaudio/${formatId}/best`;
-    const tryCmd = (flag: string) =>
-      execAsync(`"${YTDLP_BIN}" -f "${fmtSelector}" --get-url --no-warnings --socket-timeout 20 ${flag} "${url}"`, { timeout: 35000 })
-        .then(({ stdout }) => {
-          const urls = stdout.trim().split("\n").filter(Boolean);
-          if (!urls.length) throw new Error("No URLs");
-          return urls;
-        });
+  const isHLS = (u: string) =>
+    u.includes(".m3u8") || u.includes("/manifest/") || u.includes("manifest.googlevideo.com");
 
-    if (isYtStream) {
-      try {
-        return await tryCmd('--extractor-args "youtube:player_client=android"');
-      } catch {
-        return await tryCmd('--extractor-args "youtube:player_client=ios"');
+  if (isYtStream) {
+    // ── YouTube: download to temp file → stream → cleanup ─────────────────
+    // YouTube HLS streams (720p/1080p/4K) cannot be piped to stdout directly —
+    // yt-dlp needs to write video+audio temp files, merge via ffmpeg, then output.
+    // We download to /tmp, stream the merged MKV, then delete.
+    // --postprocessor-args "merger:-allowed_extensions ALL" fixes YouTube HLS audio merge.
+    req.log.info({ formatId }, "YouTube stream: temp file download");
+
+    const tmpId = `vt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const tmpBase = `/tmp/${tmpId}`;
+
+    const streamTempFile = (tmpFile: string) => {
+      if (!existsSync(tmpFile)) {
+        if (!res.headersSent) res.status(500).json({ error: "Download failed" });
+        return;
       }
-    }
-    return tryCmd("--geo-bypass");
-  };
+      const stat = statSync(tmpFile);
+      res.setHeader("Content-Length", stat.size);
+      const fileStream = createReadStream(tmpFile);
+      fileStream.pipe(res);
+      const cleanup = () => unlink(tmpFile, () => {});
+      fileStream.on("close", cleanup);
+      req.on("close", () => { fileStream.destroy(); cleanup(); });
+    };
 
+    const buildArgs = (extraArgs: string[]) => [
+      "-f", `${formatId}+bestaudio/${formatId}/best`,
+      "--merge-output-format", "mkv",
+      "--no-warnings", "--socket-timeout", "20", "--no-check-formats",
+      "--postprocessor-args", "merger:-allowed_extensions ALL",
+      ...extraArgs,
+      "-o", `${tmpBase}.%(ext)s`,
+      url,
+    ];
+
+    const runDownload = (args: string[], label: string): Promise<string | null> =>
+      new Promise((resolve) => {
+        const proc = spawn(YTDLP_BIN, args);
+        proc.stderr.on("data", (d: Buffer) =>
+          req.log.info({ stderr: d.toString().slice(0, 200) }, label)
+        );
+        proc.on("close", (code) => {
+          const outFile = `${tmpBase}.mkv`;
+          resolve(code === 0 && existsSync(outFile) ? outFile : null);
+        });
+        proc.on("error", () => resolve(null));
+        req.on("close", () => proc.kill());
+      });
+
+    // Try web client first (720p/1080p/4K), android fallback (360p combined mp4)
+    let tmpFile = await runDownload(buildArgs([]), "yt-dlp web download");
+    if (!tmpFile) {
+      req.log.warn("Web client failed, trying android fallback");
+      tmpFile = await runDownload(
+        buildArgs(["--extractor-args", "youtube:player_client=android"]),
+        "yt-dlp android download"
+      );
+    }
+    streamTempFile(tmpFile ?? `${tmpBase}.mkv`);
+    return;
+  }
+
+  // ── Non-YouTube: try --get-url + ffmpeg, fallback to yt-dlp pipe ────────
   try {
-    const cdnUrls = await getCdnUrls();
+    const fmtSelector = `${formatId}+bestaudio/${formatId}/best`;
+    const { stdout } = await execAsync(
+      `"${YTDLP_BIN}" -f "${fmtSelector}" --get-url --no-warnings --socket-timeout 20 --geo-bypass "${url}"`,
+      { timeout: 35000 }
+    );
+    const cdnUrls = stdout.trim().split("\n").filter(Boolean);
+    const hasHLS = cdnUrls.some(isHLS);
+
+    if (hasHLS || cdnUrls.length === 0) throw new Error("HLS or no CDN URLs");
 
     if (cdnUrls.length >= 2) {
-      // Merge video + audio
       const [vidUrl, audUrl] = cdnUrls;
       const ffmpeg = spawn("ffmpeg", [
-        "-i", vidUrl,
-        "-i", audUrl,
-        "-c:v", "copy",
-        "-c:a", "aac",
-        "-f", "matroska",
-        "pipe:1",
+        "-i", vidUrl, "-i", audUrl,
+        "-c:v", "copy", "-c:a", "aac",
+        "-f", "matroska", "pipe:1",
       ]);
       ffmpeg.stdout.pipe(res);
       ffmpeg.stderr.on("data", (d: Buffer) =>
@@ -657,14 +706,11 @@ router.get("/stream", async (req, res) => {
         if (!res.headersSent) res.status(500).end();
       });
       req.on("close", () => ffmpeg.kill());
-    } else if (cdnUrls.length === 1) {
-      // Remux single stream to MKV
+    } else {
       const ffmpeg = spawn("ffmpeg", [
         "-i", cdnUrls[0],
-        "-c:v", "copy",
-        "-c:a", "copy",
-        "-f", "matroska",
-        "pipe:1",
+        "-c:v", "copy", "-c:a", "copy",
+        "-f", "matroska", "pipe:1",
       ]);
       ffmpeg.stdout.pipe(res);
       ffmpeg.stderr.on("data", (d: Buffer) =>
@@ -675,18 +721,14 @@ router.get("/stream", async (req, res) => {
         if (!res.headersSent) res.status(500).end();
       });
       req.on("close", () => ffmpeg.kill());
-    } else {
-      throw new Error("No CDN URLs returned");
     }
   } catch (err) {
-    // Last resort: pipe yt-dlp output directly
-    req.log.warn({ err: (err as Error).message }, "Stream CDN fetch failed, piping yt-dlp");
+    req.log.warn({ err: (err as Error).message }, "CDN fetch failed, piping yt-dlp");
     const pipeArgs = [
       "-f", `${formatId}/best`,
+      "--merge-output-format", "mkv",
       "--no-warnings",
-      ...(isYtStream
-        ? ["--extractor-args", "youtube:player_client=android"]
-        : ["--geo-bypass"]),
+      "--geo-bypass",
       "-o", "-",
       url,
     ];
