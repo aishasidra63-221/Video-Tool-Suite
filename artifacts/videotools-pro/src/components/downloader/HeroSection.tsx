@@ -29,7 +29,7 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
       <motion.div
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full glass mb-8 animate-pulse shadow-[0_0_15px_rgba(108,99,255,0.3)]"
+        className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full glass mb-8"
       >
         <span className="text-xs font-bold tracking-wider text-white/90">⚡ FREE • FAST • NO SIGNUP REQUIRED</span>
       </motion.div>
