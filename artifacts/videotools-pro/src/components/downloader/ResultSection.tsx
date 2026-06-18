@@ -164,7 +164,7 @@ export function ResultSection({
                           )}
                         </div>
                         <span className="text-xs text-muted-foreground font-mono">
-                          {formatBytes(format.filesize)} • {format.label}
+                          {formatBytes(format.filesize) ? `${formatBytes(format.filesize)} • ` : ""}{format.label}
                         </span>
                       </div>
                       

@@ -95,6 +95,7 @@ function buildFormats(formats: YtDlpFormat[] | undefined) {
   }> = [];
 
   const seenQualities = new Set<string>();
+  const seenFormatIds = new Set<string>();
 
   // ── VIDEO FORMATS ──────────────────────────────────────────────────────────
   // Include formats with height > 0 AND that aren't audio-only (vcodec !== 'none')
@@ -121,21 +122,29 @@ function buildFormats(formats: YtDlpFormat[] | undefined) {
 
   for (const target of targetHeights) {
     if (seenQualities.has(target.quality)) continue;
+    // Find the best match that hasn't already been assigned to another quality bracket
     const match = videoFormats.find(
       (f) =>
+        !seenFormatIds.has(f.format_id) &&
         f.height != null &&
         f.height <= target.height &&
         f.height >= target.height * 0.65
     );
     if (match) {
       seenQualities.add(target.quality);
+      seenFormatIds.add(match.format_id);
+      // Use the actual height when it differs significantly from the target bracket
+      const isExact = match.height && match.height >= target.height * 0.9;
+      const actualQuality = isExact ? target.quality : `${match.height}p`;
+      const actualLabel = isExact ? target.label : `${match.height}p`;
+      const actualBadge = isExact ? target.badge : null;
       results.push({
         formatId: match.format_id,
-        quality: target.quality,
-        label: target.label,
+        quality: actualQuality,
+        label: actualLabel,
         type: "video",
-        filesize: match.filesize || match.filesize_approx || null,
-        badge: target.badge,
+        filesize: match.filesize || null, // only real filesize, not approx (approx is often wrong)
+        badge: actualBadge,
       });
     }
   }
@@ -145,10 +154,10 @@ function buildFormats(formats: YtDlpFormat[] | undefined) {
     const best = videoFormats[0];
     results.push({
       formatId: best.format_id,
-      quality: "Best",
+      quality: best.height ? `${best.height}p` : "Best",
       label: "Best Available",
       type: "video",
-      filesize: best.filesize || best.filesize_approx || null,
+      filesize: best.filesize || null,
       badge: "Best",
     });
   }
@@ -170,7 +179,7 @@ function buildFormats(formats: YtDlpFormat[] | undefined) {
         quality: "HD",
         label: "HD Quality",
         type: "video",
-        filesize: hdFmt.filesize || hdFmt.filesize_approx || null,
+        filesize: hdFmt.filesize || null,
         badge: "HD",
       });
     }
@@ -180,7 +189,7 @@ function buildFormats(formats: YtDlpFormat[] | undefined) {
         quality: "SD",
         label: "SD Quality",
         type: "video",
-        filesize: sdFmt.filesize || sdFmt.filesize_approx || null,
+        filesize: sdFmt.filesize || null,
         badge: null,
       });
     }
@@ -192,7 +201,7 @@ function buildFormats(formats: YtDlpFormat[] | undefined) {
         quality: "Best",
         label: "Best Available",
         type: "video",
-        filesize: f.filesize || f.filesize_approx || null,
+        filesize: f.filesize || null,
         badge: "Best",
       });
     }
@@ -219,7 +228,7 @@ function buildFormats(formats: YtDlpFormat[] | undefined) {
         quality: "320kbps",
         label: "MP3 320kbps",
         type: "audio",
-        filesize: best.filesize || best.filesize_approx || null,
+        filesize: best.filesize || null,
         badge: "Best Quality",
       },
       {
@@ -227,7 +236,7 @@ function buildFormats(formats: YtDlpFormat[] | undefined) {
         quality: "192kbps",
         label: "MP3 192kbps",
         type: "audio",
-        filesize: mid.filesize || mid.filesize_approx || null,
+        filesize: mid.filesize || null,
         badge: null,
       },
       {
@@ -235,7 +244,7 @@ function buildFormats(formats: YtDlpFormat[] | undefined) {
         quality: "128kbps",
         label: "MP3 128kbps",
         type: "audio",
-        filesize: low.filesize || low.filesize_approx || null,
+        filesize: low.filesize || null,
         badge: null,
       }
     );
