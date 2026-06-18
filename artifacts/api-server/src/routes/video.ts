@@ -1,17 +1,25 @@
 import { Router } from "express";
 import { exec, spawn } from "child_process";
 import { promisify } from "util";
-import https from "https";
-import http from "http";
+import { existsSync } from "fs";
 import { GetVideoInfoBody, GetDownloadUrlBody } from "@workspace/api-zod";
 
 const execAsync = promisify(exec);
 const router = Router();
 
+// ── yt-dlp binary: prefer the workspace-local updated binary ──────────────────
+const YTDLP_BIN = (() => {
+  const candidates = [
+    "/home/runner/workspace/bin/yt-dlp-latest",
+    "/home/runner/workspace/bin/yt-dlp-2026",
+  ];
+  return candidates.find(existsSync) ?? "yt-dlp";
+})();
+
 const PLATFORM_PATTERNS: Record<string, RegExp[]> = {
   YouTube: [/youtube\.com\/watch/, /youtu\.be\//, /youtube\.com\/shorts\//],
   TikTok: [/tiktok\.com\//],
-  Instagram: [/instagram\.com\/(reel|p|stories)\//],
+  Instagram: [/instagram\.com\/(reel|p|stories|tv)\//],
   Facebook: [/facebook\.com\//, /fb\.watch\//],
   Snapchat: [/snapchat\.com\/spotlight\//],
   "Twitter/X": [/twitter\.com\//, /x\.com\//],
@@ -23,6 +31,12 @@ function detectPlatform(url: string): string {
   }
   return "Unknown";
 }
+
+/** Base flags always applied to every yt-dlp call */
+const BASE_FLAGS = "--no-playlist --no-warnings --socket-timeout 30 --geo-bypass";
+
+/** Android client flags — fallback when YouTube bot detection triggers */
+const YT_ANDROID_FLAGS = '--extractor-args "youtube:player_client=android"';
 
 function isValidUrl(url: string): boolean {
   try {
@@ -78,16 +92,13 @@ function buildFormats(formats: YtDlpFormat[] | undefined) {
 
   const seenQualities = new Set<string>();
 
-  // ──────────────────────────────────
-  // VIDEO FORMATS
-  // Include any format that has a height, even if vcodec is null/unknown
-  // (Instagram combined formats have vcodec=null but valid height)
-  // Exclude explicit audio-only (vcodec='none') and mhtml thumbnails
-  // ──────────────────────────────────
+  // ── VIDEO FORMATS ──────────────────────────────────────────────────────────
+  // Include formats with height > 0 AND that aren't audio-only (vcodec !== 'none')
+  // Instagram combined formats can have vcodec=null but valid height — include those
   const videoFormats = formats
     .filter(
       (f) =>
-        f.height &&
+        f.height != null &&
         f.height > 0 &&
         f.ext !== "mhtml" &&
         f.vcodec !== "none"
@@ -95,7 +106,8 @@ function buildFormats(formats: YtDlpFormat[] | undefined) {
     .sort((a, b) => (b.height || 0) - (a.height || 0));
 
   const targetHeights = [
-    { height: 2160, quality: "4k", label: "4K Ultra HD", badge: "4K" },
+    { height: 2160, quality: "4K", label: "4K Ultra HD", badge: "4K" },
+    { height: 1440, quality: "1440p", label: "1440p QHD", badge: "QHD" },
     { height: 1080, quality: "1080p", label: "1080p Full HD", badge: "Full HD" },
     { height: 720, quality: "720p", label: "720p HD", badge: "HD" },
     { height: 480, quality: "480p", label: "480p SD", badge: null },
@@ -109,7 +121,7 @@ function buildFormats(formats: YtDlpFormat[] | undefined) {
       (f) =>
         f.height != null &&
         f.height <= target.height &&
-        f.height >= target.height * 0.7
+        f.height >= target.height * 0.65
     );
     if (match) {
       seenQualities.add(target.quality);
@@ -124,12 +136,12 @@ function buildFormats(formats: YtDlpFormat[] | undefined) {
     }
   }
 
-  // If no target heights matched but video formats exist, include the best one
+  // Fallback: if height-based detection found nothing, include best video format
   if (!results.some((r) => r.type === "video") && videoFormats.length > 0) {
     const best = videoFormats[0];
     results.push({
       formatId: best.format_id,
-      quality: "best",
+      quality: "Best",
       label: "Best Available",
       type: "video",
       filesize: best.filesize || best.filesize_approx || null,
@@ -137,20 +149,21 @@ function buildFormats(formats: YtDlpFormat[] | undefined) {
     });
   }
 
-  // ── FALLBACK for platforms with no height metadata (Facebook sd/hd, etc.) ──
-  // If still no video formats, look for mp4 formats with named quality ids
+  // ── FALLBACK for platforms with named format IDs (Facebook: sd/hd) ────────
   if (!results.some((r) => r.type === "video")) {
     const namedFormats = formats.filter(
-      (f) =>
-        f.ext === "mp4" &&
-        f.vcodec !== "none"
+      (f) => f.ext === "mp4" && f.vcodec !== "none"
     );
-    const hdFmt = namedFormats.find((f) => f.format_id === "hd" || f.format_id.includes("hd"));
-    const sdFmt = namedFormats.find((f) => f.format_id === "sd" || f.format_id.includes("sd"));
+    const hdFmt = namedFormats.find(
+      (f) => f.format_id === "hd" || f.format_id.toLowerCase().includes("hd")
+    );
+    const sdFmt = namedFormats.find(
+      (f) => f.format_id === "sd" || f.format_id.toLowerCase().includes("sd")
+    );
     if (hdFmt) {
       results.push({
         formatId: hdFmt.format_id,
-        quality: "hd",
+        quality: "HD",
         label: "HD Quality",
         type: "video",
         filesize: hdFmt.filesize || hdFmt.filesize_approx || null,
@@ -160,19 +173,19 @@ function buildFormats(formats: YtDlpFormat[] | undefined) {
     if (sdFmt) {
       results.push({
         formatId: sdFmt.format_id,
-        quality: "sd",
+        quality: "SD",
         label: "SD Quality",
         type: "video",
         filesize: sdFmt.filesize || sdFmt.filesize_approx || null,
         badge: null,
       });
     }
-    // Last resort: pick the first valid mp4 format
+    // Last resort: first valid mp4
     if (!results.some((r) => r.type === "video") && namedFormats.length > 0) {
       const f = namedFormats[0];
       results.push({
         formatId: f.format_id,
-        quality: "best",
+        quality: "Best",
         label: "Best Available",
         type: "video",
         filesize: f.filesize || f.filesize_approx || null,
@@ -181,21 +194,15 @@ function buildFormats(formats: YtDlpFormat[] | undefined) {
     }
   }
 
-  // ──────────────────────────────────
-  // AUDIO FORMATS
-  // yt-dlp sometimes returns acodec=null for audio-only formats (YouTube).
-  // We detect audio-only by: vcodec='none' AND no height AND not mhtml.
-  // If none found, we still offer 3 virtual MP3 options using 'bestaudio' selector.
-  // ──────────────────────────────────
+  // ── AUDIO FORMATS ──────────────────────────────────────────────────────────
+  // yt-dlp sometimes returns acodec=null for audio-only tracks (YouTube 233/234).
+  // Detect audio-only by: vcodec='none' AND no height AND not mhtml.
+  // Fallback to virtual 'bestaudio' entries when none found.
   const explicitAudio = formats.filter(
-    (f) =>
-      f.vcodec === "none" &&
-      !f.height &&
-      f.ext !== "mhtml"
+    (f) => f.vcodec === "none" && !f.height && f.ext !== "mhtml"
   );
 
   if (explicitAudio.length > 0) {
-    // Sort by bitrate descending
     explicitAudio.sort(
       (a, b) => (b.abr || b.tbr || 0) - (a.abr || a.tbr || 0)
     );
@@ -203,16 +210,58 @@ function buildFormats(formats: YtDlpFormat[] | undefined) {
     const mid = explicitAudio[Math.floor(explicitAudio.length / 2)];
     const low = explicitAudio[explicitAudio.length - 1];
     results.push(
-      { formatId: `${best.format_id}:audio:320`, quality: "320kbps", label: "MP3 320kbps", type: "audio" as const, filesize: best.filesize || best.filesize_approx || null, badge: "Best Quality" },
-      { formatId: `${mid.format_id}:audio:192`, quality: "192kbps", label: "MP3 192kbps", type: "audio" as const, filesize: mid.filesize || mid.filesize_approx || null, badge: null },
-      { formatId: `${low.format_id}:audio:128`, quality: "128kbps", label: "MP3 128kbps", type: "audio" as const, filesize: low.filesize || low.filesize_approx || null, badge: null }
+      {
+        formatId: `${best.format_id}:audio:320`,
+        quality: "320kbps",
+        label: "MP3 320kbps",
+        type: "audio",
+        filesize: best.filesize || best.filesize_approx || null,
+        badge: "Best Quality",
+      },
+      {
+        formatId: `${mid.format_id}:audio:192`,
+        quality: "192kbps",
+        label: "MP3 192kbps",
+        type: "audio",
+        filesize: mid.filesize || mid.filesize_approx || null,
+        badge: null,
+      },
+      {
+        formatId: `${low.format_id}:audio:128`,
+        quality: "128kbps",
+        label: "MP3 128kbps",
+        type: "audio",
+        filesize: low.filesize || low.filesize_approx || null,
+        badge: null,
+      }
     );
   } else {
-    // Virtual audio options — use yt-dlp's bestaudio selector at stream time
+    // Virtual audio — resolved at stream time using bestaudio selector
     results.push(
-      { formatId: "bestaudio:audio:320", quality: "320kbps", label: "MP3 320kbps", type: "audio" as const, filesize: null, badge: "Best Quality" },
-      { formatId: "bestaudio:audio:192", quality: "192kbps", label: "MP3 192kbps", type: "audio" as const, filesize: null, badge: null },
-      { formatId: "bestaudio:audio:128", quality: "128kbps", label: "MP3 128kbps", type: "audio" as const, filesize: null, badge: null }
+      {
+        formatId: "bestaudio:audio:320",
+        quality: "320kbps",
+        label: "MP3 320kbps",
+        type: "audio",
+        filesize: null,
+        badge: "Best Quality",
+      },
+      {
+        formatId: "bestaudio:audio:192",
+        quality: "192kbps",
+        label: "MP3 192kbps",
+        type: "audio",
+        filesize: null,
+        badge: null,
+      },
+      {
+        formatId: "bestaudio:audio:128",
+        quality: "128kbps",
+        label: "MP3 128kbps",
+        type: "audio",
+        filesize: null,
+        badge: null,
+      }
     );
   }
 
@@ -245,11 +294,30 @@ router.post("/info", async (req, res) => {
     return;
   }
 
+  const isYouTube = platform === "YouTube";
+
+  // ── Two-step YouTube extraction ───────────────────────────────────────────
+  // Step 1: Try WITHOUT android flag → gives 4K/1080p when YouTube allows it
+  // Step 2: If bot detection → retry WITH android flag → always works (360p+)
+  const runInfo = async (extraFlags = ""): Promise<string> => {
+    const cmd = `"${YTDLP_BIN}" --dump-json ${BASE_FLAGS} ${extraFlags} "${url}"`;
+    const { stdout } = await execAsync(cmd, { timeout: 60000 });
+    return stdout;
+  };
+
   try {
-    const { stdout } = await execAsync(
-      `yt-dlp --dump-json --no-playlist --no-warnings --socket-timeout 30 "${url}"`,
-      { timeout: 60000 }
-    );
+    let stdout: string;
+    try {
+      stdout = await runInfo(); // high-quality attempt first
+    } catch (firstErr) {
+      const firstStderr = ((firstErr as Error & { stderr?: string }).stderr || "");
+      if (isYouTube && (firstStderr.includes("Sign in") || firstStderr.includes("bot") || firstStderr.includes("not a bot"))) {
+        req.log.info("YouTube bot detection — retrying with android client");
+        stdout = await runInfo(YT_ANDROID_FLAGS); // fallback: lower quality but reliable
+      } else {
+        throw firstErr;
+      }
+    }
 
     const firstLine = stdout.trim().split("\n")[0];
     const info: YtDlpInfo = JSON.parse(firstLine);
@@ -265,42 +333,36 @@ router.post("/info", async (req, res) => {
     });
   } catch (err) {
     const error = err as Error & { stderr?: string };
-    const stderr = error.stderr || error.message || "";
-    req.log.error({ err: stderr.slice(0, 300) }, "yt-dlp info failed");
+    const stderr = (error.stderr || error.message || "").slice(0, 400);
+    req.log.error({ err: stderr }, "yt-dlp info failed");
 
-    if (stderr.includes("Private video") || stderr.includes("not available")) {
+    if (stderr.includes("Private") || stderr.includes("not available") || stderr.includes("unavailable")) {
       res.status(422).json({ error: "This video is private or unavailable." });
-    } else if (stderr.includes("Sign in") || stderr.includes("log in")) {
+    } else if (stderr.includes("Sign in") || stderr.includes("log in") || stderr.includes("login")) {
       res.status(422).json({ error: "This video requires login and cannot be downloaded." });
+    } else if (stderr.includes("bot") || stderr.includes("verify")) {
+      res.status(422).json({ error: "YouTube's bot detection is blocking this video. Try again in a moment." });
     } else if (stderr.includes("unsupported URL")) {
       res.status(422).json({ error: "URL not supported. Please use a direct video link." });
     } else if (platform === "TikTok") {
       res.status(422).json({
-        error:
-          "TikTok currently restricts server-side access. Try downloading from another platform or use a desktop yt-dlp client.",
+        error: "TikTok restricts access from server IPs. Try a direct TikTok link or another platform.",
       });
     } else {
       res.status(422).json({
-        error: "Unable to fetch video info. Check the URL and try again.",
+        error: "Unable to fetch video info. The video may be private, age-restricted, or removed.",
       });
     }
   }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST /api/video/download  →  returns a URL the frontend can trigger
-// Strategy:
-//   1. Parse audio flag from formatId ("xxx:audio:320")
-//   2. For audio → always use stream endpoint (ffmpeg mp3 conversion needed)
-//   3. For video → try --get-url to get direct CDN link:
-//        • 1 URL returned → return it directly (plays + downloads correctly)
-//        • 2 URLs returned (merged) → return stream endpoint
-//        • error → return stream endpoint as fallback
+// POST /api/video/download  →  returns URL the frontend opens for download
 // ─────────────────────────────────────────────────────────────────────────────
 router.post("/download", async (req, res) => {
   const parsed = GetDownloadUrlBody.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ error: "Invalid request. Provide url and formatId." });
+    res.status(400).json({ error: "Invalid request." });
     return;
   }
 
@@ -311,61 +373,50 @@ router.post("/download", async (req, res) => {
     return;
   }
 
-  // Parse audio flag: "233:audio:320" or "bestaudio:audio:192"
+  // Parse audio flag from formatId: "233:audio:320" or "bestaudio:audio:192"
   const parts = formatId.split(":");
   const isAudio = parts[1] === "audio";
-  const actualFormatId = parts[0]; // yt-dlp format id or "bestaudio"
+  const actualFormatId = parts[0];
   const audioBitrate = parts[2] || "192";
 
   if (isAudio) {
-    // Always stream audio (need ffmpeg mp3 conversion)
     const streamUrl = `/api/video/stream?url=${encodeURIComponent(url)}&formatId=${encodeURIComponent(actualFormatId)}&audio=true&bitrate=${audioBitrate}`;
     res.json({ downloadUrl: streamUrl, filename: `audio_${audioBitrate}kbps.mp3` });
     return;
   }
 
-  // Video: try --get-url for direct CDN link
   try {
-    const { stdout } = await execAsync(
-      `yt-dlp -f "${actualFormatId}" --get-url --no-warnings --socket-timeout 20 "${url}"`,
-      { timeout: 35000 }
-    );
+    const cmd = `"${YTDLP_BIN}" -f "${actualFormatId}" --get-url --no-warnings --socket-timeout 20 --geo-bypass "${url}"`;
+    const { stdout } = await execAsync(cmd, { timeout: 35000 });
 
     const urls = stdout.trim().split("\n").filter(Boolean);
 
+    // Detect HLS manifests — cannot serve as direct CDN links
     const isHLS = (u: string) =>
       u.includes(".m3u8") ||
       u.includes("/manifest/") ||
       u.includes("manifest.googlevideo.com");
 
     if (urls.length === 1 && !isHLS(urls[0])) {
-      // Direct CDN URL (Instagram, Facebook, Snapchat, Twitter) — browser downloads natively
-      res.json({
-        downloadUrl: urls[0],
-        filename: `video_${actualFormatId}.mp4`,
-      });
+      // Direct CDN URL (Instagram, Facebook, Snapchat, Twitter) → return it directly
+      res.json({ downloadUrl: urls[0], filename: `video_${actualFormatId}.mp4` });
       return;
     }
 
-    if (urls.length >= 1) {
-      // HLS manifest or needs merging → use stream endpoint
-      const streamUrl = `/api/video/stream?url=${encodeURIComponent(url)}&formatId=${encodeURIComponent(actualFormatId)}&audio=false`;
-      res.json({ downloadUrl: streamUrl, filename: `video.mkv` });
-      return;
-    }
-
-    throw new Error("No URLs returned");
-  } catch {
-    // Fallback: stream endpoint handles it
+    // HLS or multi-stream → use stream endpoint (ffmpeg merge → MKV)
     const streamUrl = `/api/video/stream?url=${encodeURIComponent(url)}&formatId=${encodeURIComponent(actualFormatId)}&audio=false`;
-    res.json({ downloadUrl: streamUrl, filename: `video_${actualFormatId}.mkv` });
+    res.json({ downloadUrl: streamUrl, filename: "video.mkv" });
+  } catch {
+    // Fallback to stream endpoint
+    const streamUrl = `/api/video/stream?url=${encodeURIComponent(url)}&formatId=${encodeURIComponent(actualFormatId)}&audio=false`;
+    res.json({ downloadUrl: streamUrl, filename: "video.mkv" });
   }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /api/video/stream  →  streams actual file bytes to browser
-// For video: uses ffmpeg to merge video+audio into MKV (seekable, plays everywhere)
-// For audio: uses ffmpeg to convert to MP3
+// GET /api/video/stream  →  streams actual file bytes
+// Video: ffmpeg merges video+audio → MKV (seekable, plays in all players)
+// Audio: ffmpeg converts to MP3
 // ─────────────────────────────────────────────────────────────────────────────
 router.get("/stream", async (req, res) => {
   const { url, formatId, audio, bitrate } = req.query as {
@@ -384,25 +435,24 @@ router.get("/stream", async (req, res) => {
   const mp3Bitrate = bitrate || "192";
 
   if (isAudio) {
-    // ── AUDIO: yt-dlp → ffmpeg → mp3 → pipe ──────────────────────────────
+    // ── AUDIO → MP3 ──────────────────────────────────────────────────────────
     res.setHeader("Content-Type", "audio/mpeg");
-    res.setHeader("Content-Disposition", `attachment; filename="audio_${mp3Bitrate}kbps.mp3"`);
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="audio_${mp3Bitrate}kbps.mp3"`
+    );
 
     const audioFmt =
       formatId === "bestaudio"
         ? "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio"
-        : `${formatId}`;
+        : formatId;
 
-    // Get the audio CDN URL first
     try {
-      const { stdout } = await execAsync(
-        `yt-dlp -f "${audioFmt}" --get-url --no-warnings --socket-timeout 20 "${url}"`,
-        { timeout: 35000 }
-      );
+      const cmd = `"${YTDLP_BIN}" -f "${audioFmt}" --get-url --no-warnings --socket-timeout 20 --geo-bypass "${url}"`;
+      const { stdout } = await execAsync(cmd, { timeout: 35000 });
       const audioUrl = stdout.trim().split("\n")[0];
       if (!audioUrl) throw new Error("No audio URL");
 
-      // Stream through ffmpeg for mp3 conversion
       const ffmpeg = spawn("ffmpeg", [
         "-i", audioUrl,
         "-vn",
@@ -411,56 +461,51 @@ router.get("/stream", async (req, res) => {
         "-f", "mp3",
         "pipe:1",
       ]);
-
       ffmpeg.stdout.pipe(res);
       ffmpeg.stderr.on("data", (d: Buffer) =>
-        req.log.info({ stderr: d.toString().slice(0, 200) }, "ffmpeg audio")
+        req.log.info({ stderr: d.toString().slice(0, 150) }, "ffmpeg audio")
       );
-      ffmpeg.on("error", (e) => {
-        req.log.error({ err: e.message }, "ffmpeg audio error");
+      ffmpeg.on("error", (e: Error) => {
         if (!res.headersSent) res.status(500).end();
+        req.log.error({ err: e.message }, "ffmpeg audio error");
       });
       req.on("close", () => ffmpeg.kill());
     } catch (err) {
-      // Fallback: pipe yt-dlp directly with -x flag
-      req.log.warn("Audio CDN URL fetch failed, falling back to yt-dlp pipe");
-      const ytdlp = spawn("yt-dlp", [
-        "-f", `${audioFmt}`,
+      req.log.warn({ err: (err as Error).message }, "Audio CDN fetch failed, falling back to yt-dlp pipe");
+      const ytdlp = spawn(YTDLP_BIN, [
+        "-f", audioFmt,
         "-x", "--audio-format", "mp3",
         "--audio-quality", `${mp3Bitrate}K`,
         "--no-warnings",
+        "--geo-bypass",
         "-o", "-",
         url,
       ]);
       ytdlp.stdout.pipe(res);
       ytdlp.stderr.on("data", (d: Buffer) =>
-        req.log.info({ stderr: d.toString().slice(0, 200) }, "yt-dlp audio fallback")
+        req.log.info({ stderr: d.toString().slice(0, 150) }, "yt-dlp audio fallback")
       );
-      ytdlp.on("error", (e) => {
+      ytdlp.on("error", (e: Error) => {
         if (!res.headersSent) res.status(500).end();
-        req.log.error({ err: e.message }, "yt-dlp audio fallback error");
+        req.log.error({ err: e.message }, "yt-dlp audio error");
       });
       req.on("close", () => ytdlp.kill());
     }
     return;
   }
 
-  // ── VIDEO: yt-dlp → optionally ffmpeg merge → MKV pipe ──────────────────
+  // ── VIDEO → MKV (via ffmpeg) ──────────────────────────────────────────────
   res.setHeader("Content-Type", "video/x-matroska");
   res.setHeader("Content-Disposition", `attachment; filename="video.mkv"`);
 
   try {
-    // Get CDN URL(s) — 1 URL = single stream, 2 URLs = needs merge
-    const { stdout } = await execAsync(
-      `yt-dlp -f "${formatId}+bestaudio/${formatId}/best" --get-url --no-warnings --socket-timeout 20 "${url}"`,
-      { timeout: 35000 }
-    );
+    const cmd = `"${YTDLP_BIN}" -f "${formatId}+bestaudio/${formatId}/best" --get-url --no-warnings --socket-timeout 20 --geo-bypass "${url}"`;
+    const { stdout } = await execAsync(cmd, { timeout: 35000 });
+    const cdnUrls = stdout.trim().split("\n").filter(Boolean);
 
-    const urls = stdout.trim().split("\n").filter(Boolean);
-
-    if (urls.length >= 2) {
-      // Merge video + audio using ffmpeg
-      const [vidUrl, audUrl] = urls;
+    if (cdnUrls.length >= 2) {
+      // Merge video + audio
+      const [vidUrl, audUrl] = cdnUrls;
       const ffmpeg = spawn("ffmpeg", [
         "-i", vidUrl,
         "-i", audUrl,
@@ -469,31 +514,29 @@ router.get("/stream", async (req, res) => {
         "-f", "matroska",
         "pipe:1",
       ]);
-
       ffmpeg.stdout.pipe(res);
       ffmpeg.stderr.on("data", (d: Buffer) =>
-        req.log.info({ stderr: d.toString().slice(0, 200) }, "ffmpeg merge")
+        req.log.info({ stderr: d.toString().slice(0, 150) }, "ffmpeg merge")
       );
-      ffmpeg.on("error", (e) => {
+      ffmpeg.on("error", (e: Error) => {
         req.log.error({ err: e.message }, "ffmpeg merge error");
         if (!res.headersSent) res.status(500).end();
       });
       req.on("close", () => ffmpeg.kill());
-    } else if (urls.length === 1) {
-      // Single stream: pipe through ffmpeg to ensure correct MKV container
+    } else if (cdnUrls.length === 1) {
+      // Remux single stream to MKV
       const ffmpeg = spawn("ffmpeg", [
-        "-i", urls[0],
+        "-i", cdnUrls[0],
         "-c:v", "copy",
         "-c:a", "copy",
         "-f", "matroska",
         "pipe:1",
       ]);
-
       ffmpeg.stdout.pipe(res);
       ffmpeg.stderr.on("data", (d: Buffer) =>
-        req.log.info({ stderr: d.toString().slice(0, 200) }, "ffmpeg remux")
+        req.log.info({ stderr: d.toString().slice(0, 150) }, "ffmpeg remux")
       );
-      ffmpeg.on("error", (e) => {
+      ffmpeg.on("error", (e: Error) => {
         req.log.error({ err: e.message }, "ffmpeg remux error");
         if (!res.headersSent) res.status(500).end();
       });
@@ -503,19 +546,21 @@ router.get("/stream", async (req, res) => {
     }
   } catch (err) {
     // Last resort: pipe yt-dlp output directly
-    req.log.warn({ err: (err as Error).message }, "Stream CDN fetch failed, using yt-dlp pipe");
-    const ytdlp = spawn("yt-dlp", [
+    req.log.warn({ err: (err as Error).message }, "Stream CDN fetch failed, piping yt-dlp");
+    const ytdlp = spawn(YTDLP_BIN, [
       "-f", `${formatId}/best`,
       "--no-warnings",
+      "--geo-bypass",
       "-o", "-",
       url,
     ]);
     ytdlp.stdout.pipe(res);
     ytdlp.stderr.on("data", (d: Buffer) =>
-      req.log.info({ stderr: d.toString().slice(0, 200) }, "yt-dlp stream fallback")
+      req.log.info({ stderr: d.toString().slice(0, 150) }, "yt-dlp stream fallback")
     );
-    ytdlp.on("error", (e) => {
+    ytdlp.on("error", (e: Error) => {
       if (!res.headersSent) res.status(500).end();
+      req.log.error({ err: e.message }, "yt-dlp stream error");
     });
     req.on("close", () => ytdlp.kill());
   }
