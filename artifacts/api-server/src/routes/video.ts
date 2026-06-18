@@ -463,11 +463,31 @@ router.post("/download", async (req, res) => {
     return;
   }
 
-  try {
-    const cmd = `"${YTDLP_BIN}" -f "${actualFormatId}" --get-url --no-warnings --socket-timeout 20 --geo-bypass "${url}"`;
-    const { stdout } = await execAsync(cmd, { timeout: 35000 });
+  const isYtDownload = /youtube\.com\/|youtu\.be\//.test(url);
 
+  // Helper: try --get-url with a specific client flag
+  const tryGetUrl = async (clientFlag: string) => {
+    const cmd = `"${YTDLP_BIN}" -f "${actualFormatId}" --get-url --no-warnings --socket-timeout 20 ${clientFlag} "${url}"`;
+    const { stdout } = await execAsync(cmd, { timeout: 35000 });
     const urls = stdout.trim().split("\n").filter(Boolean);
+    if (!urls.length) throw new Error("No URLs");
+    return urls;
+  };
+
+  try {
+    let urls: string[] = [];
+
+    if (isYtDownload) {
+      // YouTube: try android first (works for combined/restricted formats like 18)
+      // then fall back to default web client (for web-client formats like 137, 248)
+      try {
+        urls = await tryGetUrl('--extractor-args "youtube:player_client=android"');
+      } catch {
+        urls = await tryGetUrl("");
+      }
+    } else {
+      urls = await tryGetUrl("--geo-bypass");
+    }
 
     // Detect HLS manifests — cannot serve as direct CDN links
     const isHLS = (u: string) =>
@@ -476,7 +496,7 @@ router.post("/download", async (req, res) => {
       u.includes("manifest.googlevideo.com");
 
     if (urls.length === 1 && !isHLS(urls[0])) {
-      // Direct CDN URL (Instagram, Facebook, Snapchat, Twitter) → return it directly
+      // Direct CDN URL → return it (mp4 combined format, e.g. YouTube format 18)
       res.json({ downloadUrl: urls[0], filename: `video_${actualFormatId}.mp4` });
       return;
     }
@@ -576,10 +596,31 @@ router.get("/stream", async (req, res) => {
   res.setHeader("Content-Type", "video/x-matroska");
   res.setHeader("Content-Disposition", `attachment; filename="video.mkv"`);
 
+  const isYtStream = /youtube\.com\/|youtu\.be\//.test(url);
+
+  // Helper: get CDN URLs, trying android then web for YouTube
+  const getCdnUrls = async (): Promise<string[]> => {
+    const fmtSelector = `${formatId}+bestaudio/${formatId}/best`;
+    const tryCmd = (flag: string) =>
+      execAsync(`"${YTDLP_BIN}" -f "${fmtSelector}" --get-url --no-warnings --socket-timeout 20 ${flag} "${url}"`, { timeout: 35000 })
+        .then(({ stdout }) => {
+          const urls = stdout.trim().split("\n").filter(Boolean);
+          if (!urls.length) throw new Error("No URLs");
+          return urls;
+        });
+
+    if (isYtStream) {
+      try {
+        return await tryCmd('--extractor-args "youtube:player_client=android"');
+      } catch {
+        return await tryCmd('--extractor-args "youtube:player_client=ios"');
+      }
+    }
+    return tryCmd("--geo-bypass");
+  };
+
   try {
-    const cmd = `"${YTDLP_BIN}" -f "${formatId}+bestaudio/${formatId}/best" --get-url --no-warnings --socket-timeout 20 --geo-bypass "${url}"`;
-    const { stdout } = await execAsync(cmd, { timeout: 35000 });
-    const cdnUrls = stdout.trim().split("\n").filter(Boolean);
+    const cdnUrls = await getCdnUrls();
 
     if (cdnUrls.length >= 2) {
       // Merge video + audio
@@ -625,13 +666,16 @@ router.get("/stream", async (req, res) => {
   } catch (err) {
     // Last resort: pipe yt-dlp output directly
     req.log.warn({ err: (err as Error).message }, "Stream CDN fetch failed, piping yt-dlp");
-    const ytdlp = spawn(YTDLP_BIN, [
+    const pipeArgs = [
       "-f", `${formatId}/best`,
       "--no-warnings",
-      "--geo-bypass",
+      ...(isYtStream
+        ? ["--extractor-args", "youtube:player_client=android"]
+        : ["--geo-bypass"]),
       "-o", "-",
       url,
-    ]);
+    ];
+    const ytdlp = spawn(YTDLP_BIN, pipeArgs);
     ytdlp.stdout.pipe(res);
     ytdlp.stderr.on("data", (d: Buffer) =>
       req.log.info({ stderr: d.toString().slice(0, 150) }, "yt-dlp stream fallback")
