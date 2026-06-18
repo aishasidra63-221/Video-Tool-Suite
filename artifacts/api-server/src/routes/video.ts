@@ -35,8 +35,12 @@ function detectPlatform(url: string): string {
 /** Base flags always applied to every yt-dlp call */
 const BASE_FLAGS = "--no-playlist --no-warnings --socket-timeout 30 --geo-bypass";
 
-/** Android client flags — fallback when YouTube bot detection triggers */
-const YT_ANDROID_FLAGS = '--extractor-args "youtube:player_client=android"';
+/** Fallback player clients tried in order when YouTube blocks the default */
+const YT_FALLBACK_CLIENTS = [
+  '--extractor-args "youtube:player_client=ios"',
+  '--extractor-args "youtube:player_client=tv_embedded"',
+  '--extractor-args "youtube:player_client=android"',
+];
 
 function isValidUrl(url: string): boolean {
   try {
@@ -296,14 +300,24 @@ router.post("/info", async (req, res) => {
 
   const isYouTube = platform === "YouTube";
 
-  // ── Two-step YouTube extraction ───────────────────────────────────────────
-  // Step 1: Try WITHOUT android flag → gives 4K/1080p when YouTube allows it
-  // Step 2: If bot detection → retry WITH android flag → always works (360p+)
+  // ── Multi-step YouTube extraction ─────────────────────────────────────────
+  // Step 1: Try default (web client) → best quality
+  // Step 2+: If blocked, cycle through fallback player clients (ios, tv_embedded, android)
   const runInfo = async (extraFlags = ""): Promise<string> => {
     const cmd = `"${YTDLP_BIN}" --dump-json ${BASE_FLAGS} ${extraFlags} "${url}"`;
     const { stdout } = await execAsync(cmd, { timeout: 60000 });
     return stdout;
   };
+
+  const isYtBlocked = (stderr: string) =>
+    stderr.includes("Sign in") ||
+    stderr.includes("bot") ||
+    stderr.includes("not a bot") ||
+    stderr.includes("not available on this app") ||
+    stderr.includes("not available in your country") ||
+    stderr.includes("No video formats found") ||
+    stderr.includes("Requested format is not available") ||
+    stderr.includes("YouTube is no longer supported");
 
   try {
     let stdout: string;
@@ -311,9 +325,22 @@ router.post("/info", async (req, res) => {
       stdout = await runInfo(); // high-quality attempt first
     } catch (firstErr) {
       const firstStderr = ((firstErr as Error & { stderr?: string }).stderr || "");
-      if (isYouTube && (firstStderr.includes("Sign in") || firstStderr.includes("bot") || firstStderr.includes("not a bot"))) {
-        req.log.info("YouTube bot detection — retrying with android client");
-        stdout = await runInfo(YT_ANDROID_FLAGS); // fallback: lower quality but reliable
+      if (isYouTube && isYtBlocked(firstStderr)) {
+        // Try each fallback client in order until one succeeds
+        let succeeded = false;
+        for (const clientFlag of YT_FALLBACK_CLIENTS) {
+          try {
+            req.log.info(`YouTube blocked — retrying with ${clientFlag}`);
+            stdout = await runInfo(clientFlag);
+            succeeded = true;
+            break;
+          } catch (retryErr) {
+            const retryStderr = ((retryErr as Error & { stderr?: string }).stderr || "");
+            if (!isYtBlocked(retryStderr)) throw retryErr; // non-blocking error, surface it
+            // else: keep trying next client
+          }
+        }
+        if (!succeeded) throw firstErr; // all clients failed
       } else {
         throw firstErr;
       }
@@ -340,8 +367,8 @@ router.post("/info", async (req, res) => {
       res.status(422).json({ error: "This video is private or unavailable." });
     } else if (stderr.includes("Sign in") || stderr.includes("log in") || stderr.includes("login")) {
       res.status(422).json({ error: "This video requires login and cannot be downloaded." });
-    } else if (stderr.includes("bot") || stderr.includes("verify")) {
-      res.status(422).json({ error: "YouTube's bot detection is blocking this video. Try again in a moment." });
+    } else if (stderr.includes("bot") || stderr.includes("verify") || stderr.includes("not available on this app") || stderr.includes("No video formats found")) {
+      res.status(422).json({ error: "YouTube is blocking this video from server access. Try a different video or a YouTube Shorts link." });
     } else if (stderr.includes("unsupported URL")) {
       res.status(422).json({ error: "URL not supported. Please use a direct video link." });
     } else if (platform === "TikTok") {
