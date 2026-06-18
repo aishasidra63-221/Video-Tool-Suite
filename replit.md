@@ -1,36 +1,43 @@
-# [Project name]
+# VideoTools Pro
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Free video downloader supporting YouTube, TikTok, Instagram, Facebook, Snapchat, and Twitter/X — no watermarks, no login, multiple quality options.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- `pnpm --filter @workspace/api-server run dev` — run the API server (port 8080)
+- `pnpm --filter @workspace/videotools-pro run dev` — run the frontend (port varies)
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
 
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
+- Frontend: React + Vite, TailwindCSS v4, Framer Motion, wouter
+- API: Express 5 with express-rate-limit
+- Video processing: yt-dlp + ffmpeg (system deps)
 - Validation: Zod (`zod/v4`), `drizzle-zod`
 - API codegen: Orval (from OpenAPI spec)
 - Build: esbuild (CJS bundle)
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `lib/api-spec/openapi.yaml` — OpenAPI source of truth
+- `artifacts/api-server/src/routes/video.ts` — yt-dlp integration, video info + download stream
+- `artifacts/videotools-pro/src/` — React frontend
+- `artifacts/videotools-pro/index.html` — SEO meta tags, Google Fonts
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- yt-dlp called via child_process from Node.js API server — no Python wrapper needed
+- Download streaming via `/api/video/stream` GET endpoint that pipes yt-dlp stdout to response
+- `/api/video/download` POST returns a signed-style URL pointing to the stream endpoint
+- Rate limiting: 20 req/min per IP on all /api/video/* endpoints
+- Platform detection done on both frontend (URL chips, border color) and backend (validation)
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+Users paste any YouTube/TikTok/Instagram/Facebook/Snapchat/Twitter video URL, the site fetches available formats via yt-dlp, and lets them download in up to 4K video or MP3 audio. No account needed. Full legal pages included (Privacy, Terms, Disclaimer, DMCA).
 
 ## User preferences
 
@@ -38,7 +45,10 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- yt-dlp and ffmpeg are system deps (installed via Nix) — must be present at runtime
+- YouTube format merging (video+audio) uses yt-dlp's `bestvideo+bestaudio` and streams merged via ffmpeg pipe
+- Google Fonts is loaded in index.html (not index.css) to avoid PostCSS @import order warnings
+- Always run `pnpm --filter @workspace/api-spec run codegen` after any openapi.yaml change
 
 ## Pointers
 

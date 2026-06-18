@@ -1,15 +1,16 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: VideoTools Pro API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: video
+    description: Video download operations
 paths:
   /healthz:
     get:
@@ -24,6 +25,69 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /video/info:
+    post:
+      operationId: getVideoInfo
+      tags: [video]
+      summary: Get video info and available formats
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VideoInfoInput"
+      responses:
+        "200":
+          description: Video info retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VideoInfo"
+        "400":
+          description: Invalid URL or unsupported platform
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "422":
+          description: Unable to fetch video info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /video/download:
+    post:
+      operationId: getDownloadUrl
+      tags: [video]
+      summary: Get a direct download URL for a specific format
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DownloadInput"
+      responses:
+        "200":
+          description: Download URL generated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DownloadResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "422":
+          description: Unable to generate download link
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +98,88 @@ components:
       required:
         - status
 
+    VideoInfoInput:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          description: The video URL to fetch info for
+
+    VideoFormat:
+      type: object
+      required: [formatId, quality, label, type, filesize]
+      properties:
+        formatId:
+          type: string
+          description: Unique format identifier for yt-dlp
+        quality:
+          type: string
+          description: Quality identifier e.g. 360p, 720p, 1080p, 4k, mp3_128, mp3_192, mp3_320
+        label:
+          type: string
+          description: Human-readable quality label
+        type:
+          type: string
+          enum: [video, audio]
+          description: Whether this is a video or audio format
+        filesize:
+          type: ["integer", "null"]
+          description: Approximate file size in bytes, null if unknown
+        badge:
+          type: ["string", "null"]
+          description: Optional badge text e.g. HD, Full HD, 4K, Best Quality
+
+    VideoInfo:
+      type: object
+      required: [title, thumbnail, duration, platform, formats, url]
+      properties:
+        url:
+          type: string
+          description: The original URL
+        title:
+          type: string
+          description: Video title
+        thumbnail:
+          type: ["string", "null"]
+          description: Thumbnail URL
+        duration:
+          type: ["integer", "null"]
+          description: Video duration in seconds, null if unknown
+        platform:
+          type: string
+          description: Detected platform name e.g. YouTube, TikTok
+        formats:
+          type: array
+          items:
+            $ref: "#/components/schemas/VideoFormat"
+
+    DownloadInput:
+      type: object
+      required: [url, formatId]
+      properties:
+        url:
+          type: string
+          description: The video URL
+        formatId:
+          type: string
+          description: The format ID to download
+
+    DownloadResponse:
+      type: object
+      required: [downloadUrl, filename]
+      properties:
+        downloadUrl:
+          type: string
+          description: The URL to download the file from
+        filename:
+          type: string
+          description: Suggested filename for the download
+
+    ApiError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Human-readable error message
