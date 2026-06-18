@@ -240,57 +240,44 @@ function buildFormats(formats: YtDlpFormat[] | undefined) {
     explicitAudio.sort(
       (a, b) => (b.abr || b.tbr || 0) - (a.abr || a.tbr || 0)
     );
-    const best = explicitAudio[0];
-    const mid = explicitAudio[Math.floor(explicitAudio.length / 2)];
-    const low = explicitAudio[explicitAudio.length - 1];
-    results.push(
-      {
-        formatId: `${best.format_id}:audio:320`,
-        quality: "320kbps",
-        label: "MP3 320kbps",
+
+    // Show up to 3 distinct quality options based on actual source bitrates
+    const seen = new Set<number>();
+    const audioOptions: typeof explicitAudio = [];
+    for (const f of explicitAudio) {
+      const br = Math.round((f.abr || f.tbr || 0) / 10) * 10; // round to nearest 10
+      if (!seen.has(br) && br > 0) { seen.add(br); audioOptions.push(f); }
+      if (audioOptions.length >= 3) break;
+    }
+
+    audioOptions.forEach((f, i) => {
+      const srcBr = Math.round(f.abr || f.tbr || 128);
+      // Offer MP3 at source bitrate (capped at 320)
+      const mp3Br = Math.min(srcBr, 320);
+      results.push({
+        formatId: `${f.format_id}:audio:${mp3Br}`,
+        quality: `${srcBr}kbps`,
+        label: `MP3 ~${mp3Br}kbps • ${f.ext?.toUpperCase() ?? "AAC"} source`,
         type: "audio",
-        filesize: best.filesize || null,
-        badge: "Best Quality",
-      },
-      {
-        formatId: `${mid.format_id}:audio:192`,
-        quality: "192kbps",
-        label: "MP3 192kbps",
-        type: "audio",
-        filesize: mid.filesize || null,
-        badge: null,
-      },
-      {
-        formatId: `${low.format_id}:audio:128`,
-        quality: "128kbps",
-        label: "MP3 128kbps",
-        type: "audio",
-        filesize: low.filesize || null,
-        badge: null,
-      }
-    );
+        filesize: f.filesize || null,
+        badge: i === 0 ? "Best Quality" : null,
+      });
+    });
   } else {
     // Virtual audio — resolved at stream time using bestaudio selector
+    // Show only 2 practical options (upsampling beyond source quality is useless)
     results.push(
       {
-        formatId: "bestaudio:audio:320",
-        quality: "320kbps",
-        label: "MP3 320kbps",
-        type: "audio",
-        filesize: null,
-        badge: "Best Quality",
-      },
-      {
         formatId: "bestaudio:audio:192",
-        quality: "192kbps",
+        quality: "High Quality",
         label: "MP3 192kbps",
         type: "audio",
         filesize: null,
-        badge: null,
+        badge: "Best Quality",
       },
       {
         formatId: "bestaudio:audio:128",
-        quality: "128kbps",
+        quality: "Standard",
         label: "MP3 128kbps",
         type: "audio",
         filesize: null,
@@ -545,49 +532,77 @@ router.get("/stream", async (req, res) => {
         ? "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio"
         : formatId;
 
-    try {
-      const cmd = `"${YTDLP_BIN}" -f "${audioFmt}" --get-url --no-warnings --socket-timeout 20 --geo-bypass "${url}"`;
-      const { stdout } = await execAsync(cmd, { timeout: 35000 });
-      const audioUrl = stdout.trim().split("\n")[0];
-      if (!audioUrl) throw new Error("No audio URL");
+    const isYtAudio = /youtube\.com\/|youtu\.be\//.test(url);
 
-      const ffmpeg = spawn("ffmpeg", [
-        "-i", audioUrl,
-        "-vn",
-        "-c:a", "libmp3lame",
-        "-b:a", `${mp3Bitrate}k`,
-        "-f", "mp3",
-        "pipe:1",
-      ]);
-      ffmpeg.stdout.pipe(res);
-      ffmpeg.stderr.on("data", (d: Buffer) =>
-        req.log.info({ stderr: d.toString().slice(0, 150) }, "ffmpeg audio")
-      );
-      ffmpeg.on("error", (e: Error) => {
-        if (!res.headersSent) res.status(500).end();
-        req.log.error({ err: e.message }, "ffmpeg audio error");
-      });
-      req.on("close", () => ffmpeg.kill());
-    } catch (err) {
-      req.log.warn({ err: (err as Error).message }, "Audio CDN fetch failed, falling back to yt-dlp pipe");
+    if (isYtAudio) {
+      // YouTube: --get-url returns HLS manifests that ffmpeg can't process.
+      // Use yt-dlp pipe directly — it handles YouTube auth/HLS internally.
+      req.log.info("YouTube audio: piping yt-dlp directly");
       const ytdlp = spawn(YTDLP_BIN, [
         "-f", audioFmt,
         "-x", "--audio-format", "mp3",
         "--audio-quality", `${mp3Bitrate}K`,
         "--no-warnings",
-        "--geo-bypass",
         "-o", "-",
         url,
       ]);
       ytdlp.stdout.pipe(res);
       ytdlp.stderr.on("data", (d: Buffer) =>
-        req.log.info({ stderr: d.toString().slice(0, 150) }, "yt-dlp audio fallback")
+        req.log.info({ stderr: d.toString().slice(0, 150) }, "yt-dlp audio")
       );
       ytdlp.on("error", (e: Error) => {
         if (!res.headersSent) res.status(500).end();
         req.log.error({ err: e.message }, "yt-dlp audio error");
       });
       req.on("close", () => ytdlp.kill());
+    } else {
+      // Non-YouTube: try direct CDN URL + ffmpeg (faster), fallback to yt-dlp pipe
+      try {
+        const cmd = `"${YTDLP_BIN}" -f "${audioFmt}" --get-url --no-warnings --socket-timeout 20 --geo-bypass "${url}"`;
+        const { stdout } = await execAsync(cmd, { timeout: 35000 });
+        const audioUrl = stdout.trim().split("\n")[0];
+        // Reject HLS manifests (ffmpeg can't handle them without special auth)
+        if (!audioUrl || audioUrl.includes(".m3u8") || audioUrl.includes("/manifest/")) {
+          throw new Error("HLS or empty URL");
+        }
+        const ffmpeg = spawn("ffmpeg", [
+          "-i", audioUrl,
+          "-vn",
+          "-c:a", "libmp3lame",
+          "-b:a", `${mp3Bitrate}k`,
+          "-f", "mp3",
+          "pipe:1",
+        ]);
+        ffmpeg.stdout.pipe(res);
+        ffmpeg.stderr.on("data", (d: Buffer) =>
+          req.log.info({ stderr: d.toString().slice(0, 150) }, "ffmpeg audio")
+        );
+        ffmpeg.on("error", (e: Error) => {
+          if (!res.headersSent) res.status(500).end();
+          req.log.error({ err: e.message }, "ffmpeg audio error");
+        });
+        req.on("close", () => ffmpeg.kill());
+      } catch (err) {
+        req.log.warn({ err: (err as Error).message }, "Audio CDN fallback, piping yt-dlp");
+        const ytdlp = spawn(YTDLP_BIN, [
+          "-f", audioFmt,
+          "-x", "--audio-format", "mp3",
+          "--audio-quality", `${mp3Bitrate}K`,
+          "--no-warnings",
+          "--geo-bypass",
+          "-o", "-",
+          url,
+        ]);
+        ytdlp.stdout.pipe(res);
+        ytdlp.stderr.on("data", (d: Buffer) =>
+          req.log.info({ stderr: d.toString().slice(0, 150) }, "yt-dlp audio fallback")
+        );
+        ytdlp.on("error", (e: Error) => {
+          if (!res.headersSent) res.status(500).end();
+          req.log.error({ err: e.message }, "yt-dlp audio error");
+        });
+        req.on("close", () => ytdlp.kill());
+      }
     }
     return;
   }
