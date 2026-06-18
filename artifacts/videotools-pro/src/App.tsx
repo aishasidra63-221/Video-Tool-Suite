@@ -9,6 +9,8 @@ import Privacy from "@/pages/Privacy";
 import Terms from "@/pages/Terms";
 import Disclaimer from "@/pages/Disclaimer";
 import Dmca from "@/pages/Dmca";
+import Faq from "@/pages/Faq";
+import Settings from "@/pages/Settings";
 
 const queryClient = new QueryClient();
 
@@ -17,6 +19,8 @@ function Router() {
     <AppLayout>
       <Switch>
         <Route path="/" component={Home} />
+        <Route path="/faq" component={Faq} />
+        <Route path="/settings" component={Settings} />
         <Route path="/privacy" component={Privacy} />
         <Route path="/terms" component={Terms} />
         <Route path="/disclaimer" component={Disclaimer} />
