@@ -169,14 +169,27 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
         )}
       </motion.div>
 
-      <motion.p
+      <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ delay: 0.5 }}
-        className="text-sm md:text-base text-muted-foreground font-medium"
+        className="flex flex-wrap justify-center gap-2"
       >
-        2.4M+ Videos Downloaded • 98% User Satisfaction • ⭐ 4.9/5 Rating • 6 Platforms Supported
-      </motion.p>
+        {[
+          { emoji: "📥", label: "2.4M+ Downloads" },
+          { emoji: "⭐", label: "4.9/5 Rating" },
+          { emoji: "🔒", label: "100% Safe" },
+          { emoji: "🌐", label: "6 Platforms" },
+        ].map((b) => (
+          <span
+            key={b.label}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/8 border border-white/10 text-xs font-semibold text-white/70"
+          >
+            <span>{b.emoji}</span>
+            {b.label}
+          </span>
+        ))}
+      </motion.div>
     </section>
   );
 }
