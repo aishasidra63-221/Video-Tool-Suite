@@ -48,8 +48,8 @@ export default function Home() {
         />
       </div>
       
-      <FeaturesSection />
       <HowItWorksSection />
+      <FeaturesSection />
       <PlatformsSection />
       <FaqSection />
     </div>
