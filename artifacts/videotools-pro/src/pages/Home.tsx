@@ -6,8 +6,6 @@ import { PlatformsSection } from "@/components/downloader/PlatformsSection";
 import { useGetVideoInfo } from "@workspace/api-client-react";
 import { useState } from "react";
 import { VideoInfo } from "@workspace/api-client-react/src/generated/api.schemas";
-import { motion } from "framer-motion";
-import { Zap, ShieldCheck, Download } from "lucide-react";
 import { Link } from "wouter";
 
 function TopBanner() {
@@ -25,52 +23,6 @@ function TopBanner() {
         </Link>
       </div>
     </div>
-  );
-}
-
-function FeatureLines() {
-  const lines = [
-    {
-      icon: Zap,
-      text: "Lightning-fast downloads — get your video in seconds, not minutes.",
-      color: "text-yellow-400",
-      bg: "bg-yellow-400/10",
-    },
-    {
-      icon: ShieldCheck,
-      text: "100% safe & private — we never store your videos or track your activity.",
-      color: "text-green-400",
-      bg: "bg-green-400/10",
-    },
-    {
-      icon: Download,
-      text: "Multiple formats & qualities — MP4, MKV, MP3 audio up to 320kbps and 4K video.",
-      color: "text-blue-400",
-      bg: "bg-blue-400/10",
-    },
-  ];
-
-  return (
-    <section className="py-10 px-4">
-      <div className="container mx-auto max-w-3xl">
-        <div className="glass rounded-2xl divide-y divide-white/10 overflow-hidden">
-          {lines.map((line, i) => (
-            <motion.div
-              key={i}
-              initial={{ opacity: 0, x: -16 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.1 * i, duration: 0.4 }}
-              className="flex items-center gap-4 px-6 py-4"
-            >
-              <div className={`w-9 h-9 rounded-xl ${line.bg} flex items-center justify-center shrink-0`}>
-                <line.icon className={`w-5 h-5 ${line.color}`} />
-              </div>
-              <p className="text-sm md:text-base text-white/85 leading-snug">{line.text}</p>
-            </motion.div>
-          ))}
-        </div>
-      </div>
-    </section>
   );
 }
 
@@ -118,7 +70,6 @@ export default function Home() {
         />
       </div>
 
-      <FeatureLines />
       <HowItWorksSection />
       <FeaturesSection />
       <PlatformsSection />
