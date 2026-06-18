@@ -1,6 +1,6 @@
 import { detectPlatform, isValidUrl } from "@/lib/video-utils";
-import { useState } from "react";
-import { Download, X, ClipboardPaste, CheckCircle2, AlertCircle } from "lucide-react";
+import { useState, useRef } from "react";
+import { Download, X, CheckCircle2, AlertCircle } from "lucide-react";
 import { motion } from "framer-motion";
 import { PLATFORMS } from "./platform-icons";
 
@@ -8,6 +8,7 @@ export { PLATFORMS };
 
 export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) => void, isPending: boolean }) {
   const [url, setUrl] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const platformId = detectPlatform(url);
   const platform = PLATFORMS.find(p => p.id === platformId);
@@ -15,12 +16,18 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
   const showSuccess = url.length > 0 && isUrlValid && !!platformId;
   const showError = url.length > 0 && (!isUrlValid || !platformId);
 
+  const handleChipClick = () => {
+    inputRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setTimeout(() => inputRef.current?.focus(), 300);
+  };
+
   const handlePaste = async () => {
     try {
       const text = await navigator.clipboard.readText();
       setUrl(text);
+      inputRef.current?.focus();
     } catch {
-      // clipboard not available
+      inputRef.current?.focus();
     }
   };
 
@@ -53,6 +60,7 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
         The fastest, most reliable video downloader. No watermarks, no registration, completely free.
       </motion.p>
 
+      {/* Platform chips — click to focus input, no URL pre-fill */}
       <motion.div
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
@@ -64,7 +72,8 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
           return (
             <button
               key={p.id}
-              onClick={() => setUrl(`https://${p.id}.com/`)}
+              type="button"
+              onClick={handleChipClick}
               className={`flex items-center gap-2 px-4 py-2 rounded-full glass border border-white/10 transition-all duration-300 ${p.hoverBorder} hover:scale-105 hover:bg-white/5 group`}
             >
               <Icon className="w-5 h-5 flex-shrink-0 transition-transform group-hover:scale-110" />
@@ -94,26 +103,37 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
             })()}
 
             <input
+              ref={inputRef}
               type="text"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && url && !isPending && onSubmit(url)}
               placeholder="Paste video URL here... (YouTube, TikTok, Instagram...)"
-              className={`w-full bg-black/50 border-2 rounded-2xl px-4 py-5 md:py-6 text-white placeholder:text-white/40 focus:outline-none transition-all pr-24 ${platform ? 'pl-14' : 'pl-6'} text-lg shadow-inner ${
+              className={`w-full bg-black/50 border-2 rounded-2xl px-4 py-5 md:py-6 text-white placeholder:text-white/40 focus:outline-none transition-all text-lg shadow-inner ${platform ? 'pl-14' : 'pl-6'} ${url ? 'pr-14' : 'pr-28'} ${
                 showSuccess ? 'border-green-500/50 focus:border-green-500' :
-                showError ? 'border-red-500/50 focus:border-red-500' :
-                'border-white/10 focus:border-primary/50'
+                showError   ? 'border-red-500/50 focus:border-red-500' :
+                              'border-white/10 focus:border-primary/50'
               }`}
             />
 
-            <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2">
-              {url && (
-                <button onClick={() => setUrl("")} className="text-white/40 hover:text-white transition-colors p-1" title="Clear">
+            <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1">
+              {url ? (
+                <button
+                  type="button"
+                  onClick={() => { setUrl(""); inputRef.current?.focus(); }}
+                  className="text-white/50 hover:text-white transition-colors p-1.5 rounded-lg hover:bg-white/10"
+                  title="Clear"
+                >
                   <X className="w-5 h-5" />
                 </button>
-              )}
-              {!url && (
-                <button onClick={handlePaste} className="text-white/60 hover:text-white transition-colors p-2 rounded-lg bg-white/5 hover:bg-white/10" title="Paste from clipboard">
-                  <ClipboardPaste className="w-5 h-5" />
+              ) : (
+                <button
+                  type="button"
+                  onClick={handlePaste}
+                  className="flex items-center gap-1.5 text-white/70 hover:text-white transition-colors px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-sm font-semibold"
+                  title="Paste URL"
+                >
+                  Paste
                 </button>
               )}
             </div>
