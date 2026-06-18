@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useGetDownloadUrl } from "@workspace/api-client-react";
 import { formatDuration, formatBytes, detectPlatform } from "@/lib/video-utils";
-import { PLATFORMS } from "./HeroSection";
+import { PLATFORMS } from "./platform-icons";
 import { motion, AnimatePresence } from "framer-motion";
 import { Download, Film, Music, Image as ImageIcon, AlertTriangle, RefreshCw } from "lucide-react";
 import { VideoInfo } from "@workspace/api-client-react/src/generated/api.schemas";
@@ -112,10 +112,11 @@ export function ResultSection({
                   {(() => {
                     const platform = PLATFORMS.find(p => p.id === detectPlatform(info.url));
                     if (!platform) return <div className="px-3 py-1 rounded-full bg-white/10 text-xs font-medium">{info.platform}</div>;
+                    const Icon = platform.IconComponent;
                     return (
-                      <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold ${platform.bgClass}`}>
-                        <platform.icon className="w-3 h-3" />
-                        {platform.name}
+                      <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/10 text-xs font-bold">
+                        <Icon className="w-4 h-4" />
+                        <span>{platform.name}</span>
                       </div>
                     );
                   })()}

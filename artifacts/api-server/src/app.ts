@@ -7,6 +7,9 @@ import { logger } from "./lib/logger";
 
 const app: Express = express();
 
+// Trust proxy so rate-limiting works correctly behind Replit's reverse proxy
+app.set("trust proxy", 1);
+
 app.use(
   pinoHttp({
     logger,
