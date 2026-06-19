@@ -537,12 +537,14 @@ router.get("/stream", async (req, res) => {
     if (isYtAudio) {
       // YouTube: --get-url returns HLS manifests that ffmpeg can't process.
       // Use yt-dlp pipe directly — it handles YouTube auth/HLS internally.
+      // Force tv_embedded then web client — ios client is blocked by YouTube.
       req.log.info("YouTube audio: piping yt-dlp directly");
       const ytdlp = spawn(YTDLP_BIN, [
         "-f", audioFmt,
         "-x", "--audio-format", "mp3",
         "--audio-quality", `${mp3Bitrate}K`,
         "--no-warnings",
+        "--extractor-args", "youtube:player_client=tv_embedded,web",
         "-o", "-",
         url,
       ]);
