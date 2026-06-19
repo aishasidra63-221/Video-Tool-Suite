@@ -105,66 +105,101 @@ const PLATFORM_PATTERNS: Record<string, RegExp[]> = {
   Instagram: [/instagram\.com\/(p|reel|tv)\//],
 };
 
-// ── TikTok Multi-API Fallback System ─────────────────────────────────────────
-// Multiple free endpoints rotate automatically — effective limit 15,000+/day
-const TIKTOK_API_ENDPOINTS = [
-  { hostname: "www.tikwm.com",  path: "/api/",  label: "TikWM-Primary"   },
-  { hostname: "api2.tikwm.com", path: "/api/",  label: "TikWM-Secondary" },
-  { hostname: "api3.tikwm.com", path: "/api/",  label: "TikWM-Tertiary"  },
-];
+// ── TikTok URL Normalizer ─────────────────────────────────────────────────────
+// Strips tracking params (?_t=xxx&_r=1) and ensures a clean URL is sent to TikWM.
+// Also resolves vt.tiktok.com short URLs via a browser-spoofed HEAD redirect.
+function normalizeTikTokUrl(rawUrl: string): Promise<string> {
+  return new Promise((resolve) => {
+    try {
+      const parsed = new URL(rawUrl);
 
-function tikwmFetchFromHost(
-  videoUrl: string,
-  hostname: string,
-  path: string,
-  label: string
-): Promise<TikWMData> {
+      // Already a full video URL — strip tracking query params, keep only video ID path
+      if (parsed.hostname === "www.tiktok.com" || parsed.hostname === "tiktok.com") {
+        // e.g. /@user/video/123456789?_t=abc&_r=1  →  /@user/video/123456789
+        const cleanPath = parsed.pathname; // keep path, drop query params
+        resolve(`https://www.tiktok.com${cleanPath}`);
+        return;
+      }
+
+      // Short URL (vt.tiktok.com, vm.tiktok.com, m.tiktok.com) — follow redirect
+      const reqOpts = {
+        hostname: parsed.hostname,
+        path: parsed.pathname + parsed.search,
+        method: "HEAD",
+        headers: {
+          "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 TikTok/28.0.0",
+          "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9",
+        },
+      };
+      const req = https.request(reqOpts, (res) => {
+        const location = res.headers["location"] as string | undefined;
+        if (location && location.includes("tiktok.com") && location.includes("/video/")) {
+          // Resolved to actual video URL — strip query params
+          try {
+            const loc = new URL(location);
+            resolve(`https://www.tiktok.com${loc.pathname}`);
+          } catch {
+            resolve(location);
+          }
+        } else {
+          // Redirect didn't give a video URL — pass original URL and let TikWM handle it
+          resolve(rawUrl);
+        }
+      });
+      req.on("error", () => resolve(rawUrl)); // fallback to original on error
+      req.setTimeout(8000, () => { req.destroy(); resolve(rawUrl); });
+      req.end();
+    } catch {
+      resolve(rawUrl);
+    }
+  });
+}
+
+// ── TikWM API Fetch ───────────────────────────────────────────────────────────
+// tikwm.com is the primary and most reliable free TikTok API.
+// api2/api3 subdomains are dead — do not use them.
+function tikwmFetch(videoUrl: string): Promise<TikWMData> {
   return new Promise((resolve, reject) => {
     const body = `url=${encodeURIComponent(videoUrl)}&hd=1`;
-    const options = {
-      hostname,
-      path,
+    const req = https.request({
+      hostname: "www.tikwm.com",
+      path: "/api/",
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
         "Content-Length": Buffer.byteLength(body),
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Referer": `https://${hostname}/`,
-        "Origin": `https://${hostname}`,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Referer": "https://www.tikwm.com/",
+        "Origin": "https://www.tikwm.com",
         "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-mode": "cors",
       },
-    };
-    const req = https.request(options, (res) => {
+    }, (res) => {
       let data = "";
       res.on("data", (chunk) => (data += chunk));
       res.on("end", () => {
         try {
           const json = JSON.parse(data);
-          if (json.code !== 0) reject(new Error(`${label}: ${json.msg || "error"}`));
-          else resolve(json.data as TikWMData);
+          if (json.code !== 0) {
+            reject(new Error(`TikWM error: ${json.msg || "unknown"} (code ${json.code})`));
+          } else if (!json.data || typeof json.data !== "object") {
+            reject(new Error("TikWM: empty data in response"));
+          } else {
+            resolve(json.data as TikWMData);
+          }
         } catch {
-          reject(new Error(`${label}: invalid JSON`));
+          reject(new Error("TikWM: invalid JSON response"));
         }
       });
     });
-    req.on("error", (e) => reject(new Error(`${label}: ${e.message}`)));
-    req.setTimeout(20000, () => { req.destroy(); reject(new Error(`${label} timeout`)); });
+    req.on("error", (e) => reject(new Error(`TikWM request failed: ${e.message}`)));
+    req.setTimeout(15000, () => { req.destroy(); reject(new Error("TikWM: request timeout")); });
     req.write(body);
     req.end();
   });
-}
-
-// Tries each endpoint in order — next one used automatically if previous fails
-async function tikwmFetch(videoUrl: string): Promise<TikWMData> {
-  let lastError: Error = new Error("All TikTok APIs failed");
-  for (const ep of TIKTOK_API_ENDPOINTS) {
-    try {
-      return await tikwmFetchFromHost(videoUrl, ep.hostname, ep.path, ep.label);
-    } catch (err) {
-      lastError = err as Error;
-    }
-  }
-  throw lastError;
 }
 
 interface TikWMData {
@@ -1025,13 +1060,30 @@ router.post("/info", async (req, res) => {
   try {
     // ── TikTok: use TikWM API (no watermark, no server-IP blocks) ────────────
     if (isTikTok) {
+      // vt.tiktok.com short URLs: TikTok blocks server IPs from following these redirects.
+      // Guide user to copy the full video URL from the TikTok app instead.
+      if (/^https?:\/\/vt\.tiktok\.com/.test(url)) {
+        return res.status(422).json({
+          error: "vt.tiktok.com short links nahi khulte. TikTok app mein video open karo → Share → Copy link → woh full link yahan paste karo.",
+          errorCode: "TIKTOK_VT_UNSUPPORTED",
+        });
+      }
+      // Profile URL (no /video/ path) — can't download a profile, need specific video URL
+      if (!/\/video\/\d+/.test(url)) {
+        return res.status(422).json({
+          error: "Ye TikTok profile URL hai. Kisi specific video ka link chahiye. Video open karo → Share → Copy link.",
+          errorCode: "TIKTOK_NO_VIDEO_ID",
+        });
+      }
       const cached = getCached(url);
       let tk: TikWMData;
       if (cached) {
         req.log.info("cache hit (tiktok)");
         tk = JSON.parse(cached);
       } else {
-        tk = await tikwmFetch(url);
+        const cleanUrl = await normalizeTikTokUrl(url);
+        req.log.info({ original: url, clean: cleanUrl }, "TikTok URL normalized");
+        tk = await tikwmFetch(cleanUrl);
         setCache(url, JSON.stringify(tk), CACHE_TTL_LONG_MS);
       }
       const formats: Array<{
@@ -1310,7 +1362,8 @@ router.post("/download", async (req, res) => {
       if (cached) {
         tk = JSON.parse(cached);
       } else {
-        tk = await tikwmFetch(url);
+        const cleanUrl = await normalizeTikTokUrl(url);
+        tk = await tikwmFetch(cleanUrl);
         setCache(url, JSON.stringify(tk), CACHE_TTL_LONG_MS);
       }
       let directUrl: string;
