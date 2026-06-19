@@ -265,20 +265,20 @@ function buildFormats(formats: YtDlpFormat[] | undefined) {
     });
   } else {
     // Virtual audio — resolved at stream time using bestaudio selector
-    // Show only 2 practical options (upsampling beyond source quality is useless)
+    // Keep bitrates practical: 128kbps is transparent for music, 64kbps saves space
     results.push(
       {
-        formatId: "bestaudio:audio:192",
-        quality: "High Quality",
-        label: "MP3 192kbps",
+        formatId: "bestaudio:audio:128",
+        quality: "128kbps",
+        label: "MP3 128kbps • Good Quality",
         type: "audio",
         filesize: null,
-        badge: "Best Quality",
+        badge: "Recommended",
       },
       {
-        formatId: "bestaudio:audio:128",
-        quality: "Standard",
-        label: "MP3 128kbps",
+        formatId: "bestaudio:audio:64",
+        quality: "64kbps",
+        label: "MP3 64kbps • Smaller File",
         type: "audio",
         filesize: null,
         badge: null,

@@ -6,6 +6,18 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Download, Film, Music, Image as ImageIcon, AlertTriangle, RefreshCw } from "lucide-react";
 import { VideoInfo } from "@workspace/api-client-react/src/generated/api.schemas";
 
+function estimateAudioSize(formatId: string, duration: number | null): string | null {
+  if (!duration) return null;
+  const parts = formatId.split(":");
+  const isAudio = parts[1] === "audio";
+  if (!isAudio) return null;
+  const kbps = parseInt(parts[2] || "128", 10);
+  const bytes = (kbps * 1000 / 8) * duration;
+  const mb = bytes / (1024 * 1024);
+  if (mb < 1) return `~${Math.round(mb * 1024)} KB`;
+  return `~${mb.toFixed(1)} MB`;
+}
+
 export function ResultSection({ 
   info, 
   error, 
@@ -152,36 +164,40 @@ export function ResultSection({
                 <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar space-y-3 max-h-[400px]">
                   {info.formats
                     .filter(f => f.type === activeTab)
-                    .map((format, i) => (
-                    <div key={i} className="flex items-center justify-between p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 transition-colors">
-                      <div className="flex flex-col">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="font-bold text-white text-lg">{format.quality}</span>
-                          {format.badge && (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider bg-white/10 text-white/80 uppercase">
-                              {format.badge}
+                    .map((format, i) => {
+                      const estSize = format.type === "audio"
+                        ? (formatBytes(format.filesize) || estimateAudioSize(format.formatId, info.duration ?? null))
+                        : formatBytes(format.filesize);
+                      return (
+                        <div key={i} className="flex items-center justify-between p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 transition-colors">
+                          <div className="flex flex-col">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="font-bold text-white text-lg">{format.quality}</span>
+                              {format.badge && (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider bg-white/10 text-white/80 uppercase">
+                                  {format.badge}
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-xs text-muted-foreground font-mono">
+                              {estSize ? `${estSize} • ` : ""}{format.label}
                             </span>
-                          )}
+                          </div>
+                          <button
+                            onClick={() => handleDownload(info.url, format.formatId)}
+                            disabled={getDownloadUrl.isPending}
+                            className="flex items-center justify-center w-12 h-12 rounded-xl bg-green-500/20 text-green-400 hover:bg-green-500 hover:text-white transition-all shadow-[0_0_10px_rgba(34,197,94,0.2)] hover:shadow-[0_0_20px_rgba(34,197,94,0.4)] disabled:opacity-50"
+                          >
+                            {getDownloadUrl.isPending && getDownloadUrl.variables?.data.formatId === format.formatId ? (
+                              <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                            ) : (
+                              <Download className="w-5 h-5" />
+                            )}
+                          </button>
                         </div>
-                        <span className="text-xs text-muted-foreground font-mono">
-                          {formatBytes(format.filesize) ? `${formatBytes(format.filesize)} • ` : ""}{format.label}
-                        </span>
-                      </div>
-                      
-                      <button
-                        onClick={() => handleDownload(info.url, format.formatId)}
-                        disabled={getDownloadUrl.isPending}
-                        className="flex items-center justify-center w-12 h-12 rounded-xl bg-green-500/20 text-green-400 hover:bg-green-500 hover:text-white transition-all shadow-[0_0_10px_rgba(34,197,94,0.2)] hover:shadow-[0_0_20px_rgba(34,197,94,0.4)] disabled:opacity-50"
-                      >
-                        {getDownloadUrl.isPending && getDownloadUrl.variables?.data.formatId === format.formatId ? (
-                          <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                        ) : (
-                          <Download className="w-5 h-5" />
-                        )}
-                      </button>
-                    </div>
-                  ))}
-                  
+                      );
+                    })}
+
                   {info.formats.filter(f => f.type === activeTab).length === 0 && (
                     <div className="text-center py-12 text-muted-foreground">
                       No {activeTab} formats available for this video.
