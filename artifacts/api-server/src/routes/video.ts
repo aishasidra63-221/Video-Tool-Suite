@@ -355,16 +355,21 @@ router.post("/info", async (req, res) => {
         YT_WEB_FALLBACKS.map((flag) => tryClient(flag))
       ).catch(() => null);
 
-      // Wait up to 25s — take the result with more high-quality formats
-      const [androidResult, webResult] = await Promise.all([
-        androidP,
-        webFallbacksP,
-      ]);
-
-      if (webResult && (!androidResult || webResult.fmtCount >= androidResult.fmtCount)) {
-        bestResult = webResult;
-      } else if (androidResult) {
-        bestResult = androidResult;
+      // Speed-first: take whichever client responds first.
+      // If the first result has HD formats (720p+) → use it immediately.
+      // If first result has no HD (android-only 360p) → wait up to 8s more for web.
+      const firstResult = await Promise.race([androidP, webFallbacksP]);
+      if (firstResult && firstResult.fmtCount > 0) {
+        // Winner has HD formats → use immediately, no need to wait for the other
+        bestResult = firstResult;
+      } else {
+        // First result is low-quality or failed — wait for the other (max 8s bonus)
+        const bonusResult = await Promise.race([
+          androidP,
+          webFallbacksP,
+          new Promise<null>((r) => setTimeout(() => r(null), 8000)),
+        ]);
+        bestResult = bonusResult || firstResult;
       }
 
       if (!bestResult) throw new AggregateError([], "All YouTube clients failed");
