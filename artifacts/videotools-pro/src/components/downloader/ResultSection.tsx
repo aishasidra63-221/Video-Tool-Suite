@@ -166,7 +166,14 @@ export function ResultSection({
                   {info.formats
                     .filter(f => f.type === activeTab)
                     .map((format, i) => {
-                      const sizeStr = format.type === "video" ? formatBytes(format.filesize) : null;
+                      const sizeStr = format.type === "video"
+                        ? formatBytes(format.filesize)
+                        : (() => {
+                            const m = format.formatId.match(/:audio:(\d+)$/);
+                            if (!m || !info.duration) return null;
+                            const mb = (info.duration * parseInt(m[1])) / 8 / 1024;
+                            return mb < 1 ? `~${Math.round(mb * 1024)} KB` : `~${mb.toFixed(0)} MB`;
+                          })();
                       return (
                         <div key={i} className="flex items-center justify-between p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 transition-colors">
                           <div className="flex flex-col">
@@ -179,7 +186,8 @@ export function ResultSection({
                               )}
                             </div>
                             <span className="text-xs text-muted-foreground font-mono">
-                              {sizeStr ? `${sizeStr} • ` : ""}{format.label}
+                              {sizeStr ? <span className="text-white/70 font-semibold">{sizeStr}</span> : null}
+                              {sizeStr ? " • " : ""}{format.label}
                             </span>
                           </div>
                           <button

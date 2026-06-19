@@ -286,23 +286,30 @@ function buildFormats(formats: YtDlpFormat[] | undefined) {
     });
   } else {
     // Virtual audio — resolved at stream time using bestaudio selector
-    // Keep bitrates practical: 128kbps is transparent for music, 64kbps saves space
     results.push(
       {
         formatId: "bestaudio:audio:128",
-        quality: "128kbps",
-        label: "MP3 128kbps • Good Quality",
+        quality: "128 kbps",
+        label: "High Quality • 128 kbps",
         type: "audio",
         filesize: null,
-        badge: "Recommended",
+        badge: "Best",
       },
       {
         formatId: "bestaudio:audio:64",
-        quality: "64kbps",
-        label: "MP3 64kbps • Smaller File",
+        quality: "64 kbps",
+        label: "Standard Quality • 64 kbps",
         type: "audio",
         filesize: null,
         badge: null,
+      },
+      {
+        formatId: "bestaudio:audio:32",
+        quality: "32 kbps",
+        label: "Low Quality • 32 kbps",
+        type: "audio",
+        filesize: null,
+        badge: "Smallest",
       }
     );
   }
