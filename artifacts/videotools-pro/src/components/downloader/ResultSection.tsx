@@ -37,10 +37,10 @@ export function ResultSection({
 
   const handleThumbnailDownload = (url: string) => {
     if (!url) return;
+    const proxyUrl = `/api/video/thumbnail?url=${encodeURIComponent(url)}`;
     const a = document.createElement('a');
-    a.href = url;
+    a.href = proxyUrl;
     a.download = 'thumbnail.jpg';
-    a.target = '_blank';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

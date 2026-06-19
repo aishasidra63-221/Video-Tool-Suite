@@ -762,4 +762,23 @@ router.get("/stream", async (req, res) => {
   }
 });
 
+// ── Thumbnail proxy (cross-origin download fix) ───────────────────────────────
+router.get("/thumbnail", async (req, res) => {
+  const url = String(req.query.url || "").trim();
+  if (!url || !/^https?:\/\//.test(url)) {
+    return res.status(400).json({ error: "Invalid URL" });
+  }
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return res.status(502).json({ error: "Failed to fetch thumbnail" });
+    const contentType = response.headers.get("content-type") || "image/jpeg";
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Content-Disposition", 'attachment; filename="thumbnail.jpg"');
+    const buffer = await response.arrayBuffer();
+    res.send(Buffer.from(buffer));
+  } catch {
+    res.status(500).json({ error: "Thumbnail download failed" });
+  }
+});
+
 export default router;
