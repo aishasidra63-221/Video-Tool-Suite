@@ -49,6 +49,55 @@ const ytStreamSemaphore = new Semaphore(3); // max 3 concurrent stream/downloads
 const igInFlight = new Map<string, Promise<InstagramData>>();
 const ytInFlight = new Map<string, Promise<string>>(); // YouTube info deduplication
 
+// ── CDN URL Cache ─────────────────────────────────────────────────────────────
+// Cache --get-url results so N users downloading same video = 1 YouTube API hit.
+// YouTube CDN URLs (googlevideo.com) stay valid for hours; we cache for 8 min.
+interface CdnCacheEntry { urls: string[]; expiresAt: number; }
+const cdnUrlCache = new Map<string, CdnCacheEntry>();
+const CDN_CACHE_TTL_MS = 8 * 60 * 1000; // 8 minutes
+
+function getCachedCdnUrls(key: string): string[] | null {
+  const e = cdnUrlCache.get(key);
+  if (!e) return null;
+  if (Date.now() > e.expiresAt) { cdnUrlCache.delete(key); return null; }
+  return e.urls;
+}
+function setCachedCdnUrls(key: string, urls: string[]) {
+  cdnUrlCache.set(key, { urls, expiresAt: Date.now() + CDN_CACHE_TTL_MS });
+  if (cdnUrlCache.size > 300) { // evict expired entries when full
+    const now = Date.now();
+    for (const [k, v] of cdnUrlCache) { if (v.expiresAt < now) cdnUrlCache.delete(k); }
+  }
+}
+
+// ── Stream in-flight deduplication ───────────────────────────────────────────
+// Same video+format requested simultaneously → share one get-url fetch,
+// then each connection gets its own ffmpeg pipe.
+const ytStreamInFlight = new Map<string, Promise<string[]>>();
+
+// ── Per-IP download rate limiter ─────────────────────────────────────────────
+// Prevents one user/bot from spamming downloads and getting our server IP flagged.
+// Limit: 20 downloads per IP per 10-minute window.
+interface IpEntry { count: number; resetAt: number; }
+const ipDownloadMap = new Map<string, IpEntry>();
+const IP_LIMIT = 20;
+const IP_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+
+function checkIpLimit(ip: string): boolean {
+  const now = Date.now();
+  let e = ipDownloadMap.get(ip);
+  if (!e || now > e.resetAt) { ipDownloadMap.set(ip, { count: 1, resetAt: now + IP_WINDOW_MS }); return true; }
+  if (e.count >= IP_LIMIT) return false;
+  e.count++;
+  return true;
+}
+// Periodic cleanup to prevent memory growth
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of ipDownloadMap) { if (now > v.resetAt) ipDownloadMap.delete(k); }
+  for (const [k, v] of cdnUrlCache) { if (now > v.expiresAt) cdnUrlCache.delete(k); }
+}, 15 * 60 * 1000);
+
 const PLATFORM_PATTERNS: Record<string, RegExp[]> = {
   YouTube: [/youtube\.com\/watch/, /youtu\.be\//, /youtube\.com\/shorts\//],
   TikTok: [/tiktok\.com\//],
@@ -1525,27 +1574,55 @@ router.get("/stream", async (req, res) => {
     const heightLabel = (fid: string) => fid.startsWith("yt_") ? fid.replace("yt_", "") + "p" : "video";
     const filename = `video_${heightLabel(formatId ?? "")}.mp4`;
 
+    // ── Per-IP rate limit: prevent spam that flags our server IP ────────
+    const clientIp = req.ip ?? req.socket?.remoteAddress ?? "unknown";
+    if (!checkIpLimit(clientIp)) {
+      res.status(429).json({ error: "Too many downloads. Please wait a few minutes and try again." });
+      return;
+    }
+
     await ytStreamSemaphore.acquire();
     const releaseSemaphore = () => { ytStreamSemaphore.release(); };
     req.on("close", releaseSemaphore);
 
     await jitter(100, 400);
 
-    // ── Step 1: Get direct CDN URLs using ios client ────────────────────
-    const getUrlClients = ["ios", "android_embedded", "android_testsuite", "android_music"] as const;
-    let cdnUrls: string[] = [];
-    let usedClient = "";
-    for (const client of getUrlClients) {
-      try {
-        const { stdout: urlOut } = await execAsync(
-          `"${getYtDlpBin()}" -f "${resolvedFormat}" --get-url --no-warnings --socket-timeout 20 --no-check-formats --extractor-args "youtube:player_client=${client}" "${url}"`,
-          { timeout: 30000 }
-        );
-        const urls = urlOut.trim().split("\n").filter(Boolean);
-        if (urls.length > 0) { cdnUrls = urls; usedClient = client; break; }
-      } catch (e) {
-        req.log.warn({ client, err: (e as Error).message?.slice(0, 100) }, "get-url client failed");
+    // ── Step 1: Get CDN URLs (cache first, then fetch) ───────────────────
+    // Cache key = video URL + format selector — same video+quality = same URLs
+    const cdnCacheKey = `${url}::${resolvedFormat}`;
+    let cdnUrls: string[] = getCachedCdnUrls(cdnCacheKey) ?? [];
+    let fromCache = cdnUrls.length > 0;
+
+    if (!fromCache) {
+      // In-flight dedup: if another request is already fetching these URLs, wait for it
+      let fetchPromise = ytStreamInFlight.get(cdnCacheKey);
+      if (!fetchPromise) {
+        fetchPromise = (async (): Promise<string[]> => {
+          const getUrlClients = ["ios", "android_embedded", "android_testsuite", "android_music"] as const;
+          for (const client of getUrlClients) {
+            try {
+              const { stdout: urlOut } = await execAsync(
+                `"${getYtDlpBin()}" -f "${resolvedFormat}" --get-url --no-warnings --socket-timeout 20 --no-check-formats --extractor-args "youtube:player_client=${client}" "${url}"`,
+                { timeout: 30000 }
+              );
+              const urls = urlOut.trim().split("\n").filter(Boolean);
+              if (urls.length > 0) {
+                req.log.info({ client, urlCount: urls.length }, "CDN URLs fetched");
+                setCachedCdnUrls(cdnCacheKey, urls); // cache for next request
+                return urls;
+              }
+            } catch (e) {
+              req.log.warn({ client, err: (e as Error).message?.slice(0, 100) }, "get-url client failed");
+            }
+          }
+          return [];
+        })();
+        ytStreamInFlight.set(cdnCacheKey, fetchPromise);
+        fetchPromise.finally(() => ytStreamInFlight.delete(cdnCacheKey));
       }
+      cdnUrls = await fetchPromise;
+    } else {
+      req.log.info({ cdnCacheKey }, "CDN URLs served from cache (no YouTube hit)");
     }
 
     if (cdnUrls.length === 0) {
@@ -1555,7 +1632,6 @@ router.get("/stream", async (req, res) => {
       return;
     }
 
-    req.log.info({ usedClient, urlCount: cdnUrls.length }, "Got CDN URLs, starting ffmpeg pipe");
     releaseSemaphore();
     req.removeAllListeners("close");
 
@@ -1563,31 +1639,25 @@ router.get("/stream", async (req, res) => {
     res.setHeader("Content-Type", "video/mp4");
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
 
+    // CDN URLs (googlevideo.com) are pre-signed — no special headers needed.
+    // Adding incorrect/extra headers can trigger CDN rejection. Keep it clean.
     let ffmpegArgs: string[];
+    const ffmpegBase = [
+      "-y", "-loglevel", "warning",
+      "-f", "mp4",
+      "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+      "pipe:1",
+    ];
     if (cdnUrls.length >= 2) {
-      // Two streams: video + audio → merge
-      ffmpegArgs = [
-        "-y",
-        "-headers", "User-Agent: com.google.ios.youtube/19.29.1 CFNetwork/3826.400.120 Darwin/24.0.0\r\n",
-        "-i", cdnUrls[0],
-        "-headers", "User-Agent: com.google.ios.youtube/19.29.1 CFNetwork/3826.400.120 Darwin/24.0.0\r\n",
-        "-i", cdnUrls[1],
+      // Two DASH streams: video + audio → merge
+      ffmpegArgs = ["-y", "-loglevel", "warning", "-i", cdnUrls[0], "-i", cdnUrls[1],
         "-c:v", "copy", "-c:a", "copy",
-        "-f", "mp4",
-        "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-        "pipe:1",
-      ];
+        "-f", "mp4", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "pipe:1"];
     } else {
-      // Single stream (360p combined): just remux to mp4
-      ffmpegArgs = [
-        "-y",
-        "-headers", "User-Agent: com.google.ios.youtube/19.29.1 CFNetwork/3826.400.120 Darwin/24.0.0\r\n",
-        "-i", cdnUrls[0],
+      // Single stream: remux to fragmented mp4
+      ffmpegArgs = ["-y", "-loglevel", "warning", "-i", cdnUrls[0],
         "-c", "copy",
-        "-f", "mp4",
-        "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-        "pipe:1",
-      ];
+        "-f", "mp4", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "pipe:1"];
     }
 
     const ffmpegBin = "ffmpeg";
