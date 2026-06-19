@@ -149,39 +149,77 @@ function deepFindStrings(obj: unknown, predicate: (s: string) => boolean, result
 async function snapchatFetch(videoUrl: string): Promise<SnapchatData> {
   const html = await snapHttpGet(videoUrl);
 
-  // Extract __NEXT_DATA__ JSON
+  // ── Step 1: og:video meta tag — ALWAYS points to the correct current video ─
+  // This is the most reliable source; Snapchat sets it to the exact CDN URL
+  // of the video being viewed, not related/trending videos.
+  const ogVideoMatch =
+    html.match(/<meta[^>]+property="og:video:secure_url"[^>]+content="([^"]+)"/) ||
+    html.match(/<meta[^>]+property="og:video"[^>]+content="([^"]+)"/) ||
+    html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:video:secure_url"/) ||
+    html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:video"/);
+  const ogVideoUrl = ogVideoMatch?.[1] || null;
+
+  // ── Step 2: Parse __NEXT_DATA__ for CDN URLs (fallback) ─────────────────
   const match = html.match(/<script[^>]+id="__NEXT_DATA__"[^>]*>([^<]+)<\/script>/);
-  if (!match) throw new Error("Snapchat: page data not found — make sure it is a public Spotlight URL");
+  let nextData: unknown = null;
+  if (match) {
+    try { nextData = JSON.parse(match[1]); } catch { /* ignore */ }
+  }
 
-  let nextData: unknown;
-  try { nextData = JSON.parse(match[1]); }
-  catch { throw new Error("Snapchat: failed to parse page data"); }
+  // ── Step 3: Find the correct video URL ──────────────────────────────────
+  // Priority:
+  //   1. og:video tag (exact video, most reliable)
+  //   2. bolt-gcdn.sc-cdn.net with .27. (video stream CDN pattern)
+  //   3. Any mp4 URL from __NEXT_DATA__
+  let foundVideoUrl: string | null = ogVideoUrl;
 
-  // ── Snapchat CDN facts (confirmed by testing) ──────────────────────────────
-  // Video streams:    bolt-gcdn.sc-cdn.net  with  .27.  in path
-  // Thumbnails:       bolt-gcdn.sc-cdn.net  with  .256. in path
-  //                   cf-st.sc-cdn.net      (static images)
-  // ────────────────────────────────────────────────────────────────────────────
-  const boltUrls = deepFindStrings(nextData, (s) => s.includes("bolt-gcdn.sc-cdn.net"));
-  const videoUrls = boltUrls.filter((u) => u.includes(".27."));
-  const thumbBoltUrls = boltUrls.filter((u) => u.includes(".256."));
-  const cfstUrls = deepFindStrings(nextData, (s) => s.includes("cf-st.sc-cdn.net"));
+  if (!foundVideoUrl && nextData) {
+    // ── Snapchat CDN facts ──────────────────────────────────────────────────
+    // Video streams:    bolt-gcdn.sc-cdn.net  with  .27.  in path
+    // Thumbnails:       bolt-gcdn.sc-cdn.net  with  .256. in path
+    // ── Strategy: find snap belonging to current URL by matching snap ID ───
+    const urlSnapId = videoUrl.split("/").filter(Boolean).pop()?.split("?")[0] || "";
+    const boltUrls = deepFindStrings(nextData, (s) => s.includes("bolt-gcdn.sc-cdn.net"));
+    const videoUrls = boltUrls.filter((u) => u.includes(".27."));
 
-  if (!videoUrls.length) {
+    if (videoUrls.length) {
+      // Prefer a URL that contains the snap ID (exact match), else use first
+      const exactMatch = videoUrls.find((u) => urlSnapId && u.includes(urlSnapId));
+      foundVideoUrl = exactMatch || videoUrls[0];
+    }
+
+    if (!foundVideoUrl) {
+      // Fallback: any direct .mp4 URL
+      const mp4Urls = deepFindStrings(nextData, (s) => s.includes(".mp4") && s.startsWith("https"));
+      if (mp4Urls.length) foundVideoUrl = mp4Urls[0];
+    }
+  }
+
+  if (!foundVideoUrl) {
     throw new Error("Snapchat: no video found — the video may be private, deleted, or not a Spotlight video");
   }
 
-  // Title from og:title meta tag
-  const titleMatch = html.match(/<meta[^>]+property="og:title"[^>]+content="([^"]+)"/);
+  // ── Title ────────────────────────────────────────────────────────────────
+  const titleMatch = html.match(/<meta[^>]+property="og:title"[^>]+content="([^"]+)"/) ||
+    html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:title"/);
   const title = titleMatch ? titleMatch[1].replace(/\s*\|\s*Snapchat\s*$/, "").trim() : "Snapchat Video";
 
-  // Thumbnail: prefer bolt .256. urls, fallback to cf-st
-  const thumbnail = thumbBoltUrls[0] || cfstUrls[0] || null;
+  // ── Thumbnail ────────────────────────────────────────────────────────────
+  const ogImageMatch = html.match(/<meta[^>]+property="og:image"[^>]+content="([^"]+)"/) ||
+    html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:image"/);
+  let thumbnail: string | null = ogImageMatch?.[1] || null;
+
+  if (!thumbnail && nextData) {
+    const boltUrls = deepFindStrings(nextData, (s) => s.includes("bolt-gcdn.sc-cdn.net"));
+    const thumbBoltUrls = boltUrls.filter((u) => u.includes(".256."));
+    const cfstUrls = deepFindStrings(nextData, (s) => s.includes("cf-st.sc-cdn.net"));
+    thumbnail = thumbBoltUrls[0] || cfstUrls[0] || null;
+  }
 
   return {
     title,
     thumbnail,
-    videoUrl: videoUrls[0],
+    videoUrl: foundVideoUrl,
     duration: null,
   };
 }
