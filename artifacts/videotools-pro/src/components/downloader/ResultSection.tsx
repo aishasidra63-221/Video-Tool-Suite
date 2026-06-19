@@ -6,17 +6,6 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Download, Film, Music, Image as ImageIcon, AlertTriangle, RefreshCw } from "lucide-react";
 import { VideoInfo } from "@workspace/api-client-react/src/generated/api.schemas";
 
-function estimateAudioSize(formatId: string, duration: number | null): string | null {
-  if (!duration) return null;
-  const parts = formatId.split(":");
-  const isAudio = parts[1] === "audio";
-  if (!isAudio) return null;
-  const kbps = parseInt(parts[2] || "128", 10);
-  const bytes = (kbps * 1000 / 8) * duration;
-  const mb = bytes / (1024 * 1024);
-  if (mb < 1) return `~${Math.round(mb * 1024)} KB`;
-  return `~${mb.toFixed(1)} MB`;
-}
 
 export function ResultSection({ 
   info, 
@@ -165,9 +154,7 @@ export function ResultSection({
                   {info.formats
                     .filter(f => f.type === activeTab)
                     .map((format, i) => {
-                      const estSize = format.type === "audio"
-                        ? (formatBytes(format.filesize) || estimateAudioSize(format.formatId, info.duration ?? null))
-                        : formatBytes(format.filesize);
+                      const sizeStr = format.type === "video" ? formatBytes(format.filesize) : null;
                       return (
                         <div key={i} className="flex items-center justify-between p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 transition-colors">
                           <div className="flex flex-col">
@@ -180,7 +167,7 @@ export function ResultSection({
                               )}
                             </div>
                             <span className="text-xs text-muted-foreground font-mono">
-                              {estSize ? `${estSize} • ` : ""}{format.label}
+                              {sizeStr ? `${sizeStr} • ` : ""}{format.label}
                             </span>
                           </div>
                           <button
