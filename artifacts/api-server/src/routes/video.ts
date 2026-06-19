@@ -1466,8 +1466,27 @@ router.get("/thumbnail", async (req, res) => {
       headers["Origin"] = "https://www.instagram.com";
     }
     const response = await fetch(url, { headers });
-    if (!response.ok) return res.status(502).json({ error: "Failed to fetch thumbnail" });
+    if (!response.ok) {
+      // Return a transparent 1×1 PNG so <img> onError fires properly
+      const transparentPng = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+        "base64"
+      );
+      res.setHeader("Content-Type", "image/png");
+      res.setHeader("X-Thumb-Error", `upstream ${response.status}`);
+      return res.status(200).send(transparentPng);
+    }
     const contentType = response.headers.get("content-type") || "image/jpeg";
+    // Reject non-image responses (e.g. HTML error pages)
+    if (!contentType.startsWith("image/")) {
+      const transparentPng = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+        "base64"
+      );
+      res.setHeader("Content-Type", "image/png");
+      res.setHeader("X-Thumb-Error", "non-image content-type");
+      return res.status(200).send(transparentPng);
+    }
     res.setHeader("Content-Type", contentType);
     res.setHeader("Cache-Control", "public, max-age=3600");
     if (isDownload) {
@@ -1476,7 +1495,12 @@ router.get("/thumbnail", async (req, res) => {
     const buffer = await response.arrayBuffer();
     res.send(Buffer.from(buffer));
   } catch {
-    res.status(500).json({ error: "Thumbnail download failed" });
+    const transparentPng = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+      "base64"
+    );
+    res.setHeader("Content-Type", "image/png");
+    res.status(200).send(transparentPng);
   }
 });
 

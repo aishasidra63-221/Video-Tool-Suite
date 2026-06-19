@@ -1,10 +1,59 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useGetDownloadUrl } from "@workspace/api-client-react";
 import { formatDuration, formatBytes, detectPlatform } from "@/lib/video-utils";
 import { PLATFORMS } from "./platform-icons";
 import { motion, AnimatePresence } from "framer-motion";
-import { Download, Film, Music, AlertTriangle, RefreshCw, ImageDown } from "lucide-react";
+import { Download, Film, Music, AlertTriangle, RefreshCw, ImageDown, Image } from "lucide-react";
 import { VideoInfo } from "@workspace/api-client-react/src/generated/api.schemas";
+
+// Smart thumbnail: direct URL → proxy URL → icon placeholder
+function SmartThumbnail({ src, alt, platform }: { src: string; alt: string; platform: string }) {
+  const [stage, setStage] = useState<"direct" | "proxy" | "failed">("direct");
+  const triedProxy = useRef(false);
+
+  const isInstagram = platform === "Instagram" ||
+    src.includes("cdninstagram") || src.includes("fbcdn");
+
+  const proxyUrl = `/api/video/thumbnail?url=${encodeURIComponent(src)}`;
+
+  // Stage 1: try direct (browser may have cookies / no CORS issue for img tags)
+  // Stage 2: try proxy (server fetches with proper headers)
+  // Stage 3: placeholder
+
+  const displaySrc = stage === "direct"
+    ? (isInstagram ? proxyUrl : src)   // Instagram always start with proxy — faster
+    : stage === "proxy"
+      ? proxyUrl
+      : null;
+
+  const handleError = () => {
+    if (stage === "direct" && !triedProxy.current) {
+      triedProxy.current = true;
+      setStage("proxy");
+    } else {
+      setStage("failed");
+    }
+  };
+
+  if (stage === "failed" || !displaySrc) {
+    return (
+      <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-white/20">
+        <Image className="w-10 h-10" />
+        <span className="text-xs">No thumbnail</span>
+      </div>
+    );
+  }
+
+  return (
+    <img
+      key={displaySrc}
+      src={displaySrc}
+      alt={alt}
+      className="w-full h-full object-cover"
+      onError={handleError}
+    />
+  );
+}
 
 export function ResultSection({
   info,
@@ -59,13 +108,6 @@ export function ResultSection({
     setTimeout(() => setDownloadingThumb(false), 3000);
   };
 
-  const getDisplayThumbnail = (thumbnail: string | null, platform: string) => {
-    if (!thumbnail) return null;
-    if (platform === "Instagram" || thumbnail.includes("cdninstagram") || thumbnail.includes("fbcdn")) {
-      return `/api/video/thumbnail?url=${encodeURIComponent(thumbnail)}`;
-    }
-    return thumbnail;
-  };
 
   if (!isLoading && !info && !error) return null;
 
@@ -157,14 +199,15 @@ export function ResultSection({
               <div className="md:col-span-2 p-6 bg-white/5 md:border-r border-white/5">
                 <div className="relative rounded-xl overflow-hidden aspect-video bg-black mb-4 shadow-lg">
                   {info.thumbnail ? (
-                    <img
-                      src={getDisplayThumbnail(info.thumbnail, info.platform)}
+                    <SmartThumbnail
+                      src={info.thumbnail}
                       alt={info.title}
-                      className="w-full h-full object-cover"
+                      platform={info.platform}
                     />
                   ) : (
-                    <div className="w-full h-full flex items-center justify-center text-white/20 text-sm">
-                      No Thumbnail
+                    <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-white/20">
+                      <Image className="w-10 h-10" />
+                      <span className="text-xs">No Thumbnail</span>
                     </div>
                   )}
                   {info.duration && (
