@@ -1,95 +1,102 @@
 ---
 name: yt-dlp platform quirks
-description: Per-platform yt-dlp behavior oddities, YouTube client rotation strategy, download routing
+description: Per-platform yt-dlp behavior oddities, YouTube client rotation strategy, download routing, anti-detection
 ---
 
-## YouTube — Client Rotation Strategy (mid-2026)
+## YouTube — Client Rotation Strategy (2026-06-19, binary 2026.06.09)
 
-**Working clients (tested 2026-06-19):**
-- `android,ios` — combined: gets ALL formats (format 18 360p + HD video-only 144p-4K) — BEST
-- `ios` — 144p to 2160p video-only formats (vids without audio, need separate audio track)
-- `android` — format 18 only (360p combined mp4, no PO token needed) — reliable fallback
-- `mweb` — alternate path, lower quality
+**Working clients:**
+- `android_embedded` ✅
+- `android_testsuite` ✅
+- `android_music` ✅
+- `tv_embedded` ✅ (added after ios broke)
 
-**Blocked clients (mid-2026):**
-- `web` (default): blocked from server IPs for HD
-- `tv_embedded`: "no longer supported in this application or device"
-- `web_embedded`: "unavailable, error code 152"
-- `web_creator`: "sign in required"
+**Broken in yt-dlp 2026.06+:**
+- `ios` ❌ — "Requested format is not available" on all videos
+- `android,ios` ❌
+- `web` ❌ — blocked from server IPs for HD
+- `mweb` ❌
 
-**Implementation:** `lib/ytdlp-manager.ts` — `withYtClientRotation()` function.
+**Implementation:** `lib/ytdlp-manager.ts` — `withYtClientRotation()`.
 - Tracks per-client health (failure count + timestamp)
-- 5-min cooldown after 3 failures on a client
+- 5-min cooldown after 3 failures
 - Sorts clients by health before each attempt
 - Skips rotation on permanent errors (login, private, copyright)
 
-## YouTube HD Video — info extraction (UPDATED mid-2026)
+## Anti-Detection Stack (proven working 2026-06)
 
-**All clients now return only format 18 (360p) for the /info endpoint** — YouTube enforces PO token for DASH HD formats server-side, so format listing is unreliable regardless of client.
+| Technique | Flag | Notes |
+|-----------|------|-------|
+| XFF country rotation | `--xff "US"` | 14 countries; yt-dlp takes 2-letter ISO code only |
+| Client rotation | `withYtClientRotation()` | 4 Android/TV clients |
+| Request jitter | 200–900ms delay | Prevents burst detection |
+| CDN URL cache | 8-min TTL | Reduces real IP exposure |
+| In-flight dedup | `Map<url, Promise>` | N users = 1 yt-dlp call |
 
-**Fix:** Return hardcoded virtual format IDs (`yt_2160`, `yt_1440`, `yt_1080`, `yt_720`, `yt_480`, `yt_360`, `yt_240`) in the info endpoint. These are resolved to proper yt-dlp format selectors (`bestvideo[height<=N][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=N]+bestaudio/best[height<=N]/best`) at download/stream time. This approach always works because yt-dlp picks the best available format that YouTube serves.
+## XFF Flag Format — IMPORTANT
 
-**Why:** Direct format listing from yt-dlp `--dump-json` only returns format 18 (360p combined) without PO token. Virtual IDs let yt-dlp choose at download time when it has more context/auth.
+yt-dlp ONLY accepts:
+- `--xff "US"` — 2-letter ISO country code ✅
+- `--xff "1.2.3.4/24"` — CIDR block ✅
 
-**Download routing:** `yt_XXXX` format IDs always go to `/stream` endpoint (never direct CDN) because HD always needs video+audio merge.
+Does NOT accept:
+- `--xff "1.2.3.4"` — bare IP → "Unsupported --xff" error ❌
 
-**Critical bug (fixed):** yt-dlp with `--merge-output-format mkv` only remuxes to .mkv when merging two streams. Single-stream fallback (format 18, 360p) stays as .mp4. Always use `findOutputFile()` checking [.mkv, .mp4, .webm, .m4v, .avi] instead of hardcoding `.mkv` extension in `runDownload`.
+## Browser Header Spoofing via --add-header — DO NOT USE
 
-**Estimated filesize:** YouTube virtual formats calculate `estSize(kbps) = kbps * 1000 / 8 * duration_seconds`. Typical: 4K=15000kbps, 1440p=8000, 1080p=4000, 720p=2500, 480p=1200.
+Adding `--add-header` headers (User-Agent, Accept-Language, sec-fetch-*) to yt-dlp commands **breaks YouTube extraction in yt-dlp 2026.06+**. The error is "Failed to extract any player response".
 
-**Mobile download:** Stream URLs must use `window.open(url, "_blank")` not `a.click()`. Mobile browsers block programmatic clicks for long-running responses.
+**Why:** The newer binary makes internal YouTube API calls where custom headers interfere.
+**Also:** `sec-ch-ua` values contain commas+quotes that break shell argument parsing — yt-dlp treats comma-separated parts as separate URLs.
+**What works instead:** XFF + client rotation covers 99% of bot detection without header issues.
+
+## curl_cffi / --impersonate Status (2026-06)
+
+- Nix has curl_cffi 0.7.4; yt-dlp needs 0.10+ for `--impersonate`
+- All impersonate targets (Chrome/Firefox/Safari/Edge) show "unavailable"
+- TLS fingerprinting not feasible in this environment
+- The `_wrapper.abi3.so` exists but `requests` submodule missing in 0.7.4
+
+## YouTube HD Video — info extraction
+
+Virtual format IDs (`yt_2160`, `yt_1440`, `yt_1080`, `yt_720`, `yt_480`) returned in info endpoint.
+Resolved to proper yt-dlp format selectors at download/stream time.
+Download routing: `yt_XXXX` always go to `/stream` endpoint (HD needs video+audio merge).
+
+**Estimated filesize:** `kbps * 1000 / 8 * duration_seconds`. Typical: 4K=15000kbps, 1440p=8000, 1080p=4000, 720p=2500, 480p=1200.
 
 ## YouTube audio stream
 
-Audio works via client rotation → `18/bestaudio` format → get direct CDN URL → ffmpeg `-vn` extract MP3.
-- Format 18 (360p combined): direct CDN URL available without PO token
-- ffmpeg `-vn` strips video, outputs MP3 at requested bitrate
-
-**DO NOT use:** `--extractor-args "youtube:player_client=web"` for audio — blocked. `tv_embedded` — blocked. `web_embedded` — blocked.
+Format `18/bestaudio` → client rotation → direct CDN URL → ffmpeg `-vn` → MP3.
 
 ## Auto-update yt-dlp
 
-`lib/ytdlp-manager.ts` downloads latest binary from GitHub releases on every startup.
-- Checks GitHub API for `yt-dlp/yt-dlp` latest release tag
-- Downloads to `/home/runner/workspace/bin/yt-dlp-latest.tmp`, chmods 755, verifies with `--version`, then moves to `.../yt-dlp-latest`
+`lib/ytdlp-manager.ts` downloads latest binary from GitHub on startup.
+- `/home/runner/workspace/bin/yt-dlp-latest`
 - Version cached in `/home/runner/workspace/bin/.yt-dlp-version`
-- **Must chmod before verify** — curl download has no execute bit by default
-- Runs in background (non-blocking startup)
-- getYtDlpBin() returns custom binary if exists, otherwise falls back to system `yt-dlp`
 
-## YouTube HLS merger fix
+## YouTube HLS merger
 
-yt-dlp temp-file approach for HLS downloads (720p+):
 ```
-yt-dlp -f "formatId+bestaudio/formatId/best" --merge-output-format mkv
-  --no-check-formats
-  --postprocessor-args "merger:-allowed_extensions ALL"
-  -o /tmp/tmpfile.%(ext)s URL
+yt-dlp -f "formatId+bestaudio" --merge-output-format mkv --no-check-formats
+  --postprocessor-args "merger:-allowed_extensions ALL" -o /tmp/file.%(ext)s URL
 ```
-`--postprocessor-args "merger:-allowed_extensions ALL"` is required — without it, ffmpeg rejects the aac extension mismatch.
-Stream the merged MKV file to client with Content-Length, delete on close.
+`--postprocessor-args "merger:-allowed_extensions ALL"` required — without it ffmpeg rejects aac extension mismatch.
 
 ## YouTube audio-only formats
 - `acodec: null` (not `"mp4a.40.2"`) for formats 233, 234
-- Detect by `vcodec === "none"` + no height (not by acodec)
+- Detect by `vcodec === "none"` + no height
 
 ## TikTok
-- Blocked on server IPs; yt-dlp returns empty stdout (no JSON, no error)
-- Return user-friendly error about server-side restrictions
+- Blocked on server IPs; yt-dlp returns empty stdout
+- Use TikWM API instead (tikwm.com, api2.tikwm.com, api3.tikwm.com)
 
 ## Facebook
 - Formats: `format_id="hd"/"sd"` with `height=None`, `vcodec=None`
-- Height-based detection gives 0 results; match by format_id string instead
+- Match by format_id string, not height
 
-## Instagram (CONFIRMED mid-2024 complete lockdown)
-- **ALL unauthenticated access blocked**: oEmbed, HTML scraping, `__a=1`, mobile API (`i.instagram.com/api/v1/media/{id}/info/`) → all return `login_required` or empty.
-- **Mobile API approach is dead** — do NOT attempt `i.instagram.com/api/v1/media/{id}/info/` — returns `login_required` even with spoofed Instagram Android UA.
-- **Only working approach**: yt-dlp with user session cookies (`--cookies bin/instagram-cookies.txt`).
-- Error code `INSTAGRAM_COOKIES_REQUIRED` thrown when no cookies configured. Frontend shows special Instagram setup UI with 4-step guide + "Go to Settings" button.
-- oEmbed + HTML layers still run for metadata (thumbnail, username) — no video URL without cookies.
-- Cookie helpers: `getInstagramCookiesFlag()`, `hasInstagramCookies()`, `saveInstagramCookies()`, `deleteInstagramCookies()` in `lib/ytdlp-manager.ts`.
-
-## Download routing
-- Direct CDN (non-HLS) → return URL directly to browser
-- HLS or merged → `/api/video/stream` (temp file → MKV → stream → cleanup)
-- YouTube: always use stream endpoint, never direct CDN return
+## Instagram (complete lockdown since mid-2024)
+- ALL unauthenticated access blocked
+- Only working: yt-dlp with user session cookies (`--cookies bin/instagram-cookies.txt`)
+- Error code `INSTAGRAM_COOKIES_REQUIRED` → frontend shows setup UI
+- Cookie helpers in `lib/ytdlp-manager.ts`
