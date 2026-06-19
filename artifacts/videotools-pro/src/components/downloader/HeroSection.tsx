@@ -169,22 +169,50 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ delay: 0.5 }}
-        className="flex flex-wrap justify-center gap-2"
+        className="flex flex-wrap justify-center gap-3"
       >
-        {[
-          { emoji: "📥", label: "2.4M+ Downloads" },
-          { emoji: "⭐", label: "4.9/5 Rating" },
-          { emoji: "🔒", label: "100% Safe" },
-          { emoji: "🌐", label: "6 Platforms" },
-        ].map((b) => (
-          <span
-            key={b.label}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/8 border border-white/10 text-xs font-semibold text-white/70"
-          >
-            <span>{b.emoji}</span>
-            {b.label}
+        {/* Badge 1: No Sign-up */}
+        <div className="group flex items-center gap-2.5 px-5 py-2.5 rounded-2xl bg-gradient-to-br from-violet-500/10 to-purple-500/5 border border-violet-500/20 hover:border-violet-400/40 transition-all duration-300 hover:scale-105 shadow-[0_0_12px_rgba(139,92,246,0.08)]">
+          <span className="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-lg bg-violet-500/20 group-hover:bg-violet-500/30 transition-colors">
+            <svg viewBox="0 0 20 20" fill="none" className="w-4 h-4 text-violet-400" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M10 2a4 4 0 100 8 4 4 0 000-8z"/>
+              <path d="M3 18c0-3.314 3.134-6 7-6s7 2.686 7 6"/>
+              <path d="M14 11l1.5 1.5L18 10" strokeWidth="1.8"/>
+            </svg>
           </span>
-        ))}
+          <div className="flex flex-col leading-tight">
+            <span className="text-xs font-bold text-white tracking-wide">No Sign-up</span>
+            <span className="text-[10px] text-white/50 font-medium">100% Free Forever</span>
+          </div>
+        </div>
+
+        {/* Badge 2: Downloads count */}
+        <div className="group flex items-center gap-2.5 px-5 py-2.5 rounded-2xl bg-gradient-to-br from-emerald-500/10 to-teal-500/5 border border-emerald-500/20 hover:border-emerald-400/40 transition-all duration-300 hover:scale-105 shadow-[0_0_12px_rgba(16,185,129,0.08)]">
+          <span className="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-lg bg-emerald-500/20 group-hover:bg-emerald-500/30 transition-colors">
+            <svg viewBox="0 0 20 20" fill="none" className="w-4 h-4 text-emerald-400" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M10 3v10M6 9l4 4 4-4"/>
+              <path d="M4 16h12"/>
+            </svg>
+          </span>
+          <div className="flex flex-col leading-tight">
+            <span className="text-xs font-bold text-white tracking-wide">2.4M+ Downloads</span>
+            <span className="text-[10px] text-white/50 font-medium">Trusted by millions</span>
+          </div>
+        </div>
+
+        {/* Badge 3: Safe & Secure */}
+        <div className="group flex items-center gap-2.5 px-5 py-2.5 rounded-2xl bg-gradient-to-br from-sky-500/10 to-blue-500/5 border border-sky-500/20 hover:border-sky-400/40 transition-all duration-300 hover:scale-105 shadow-[0_0_12px_rgba(14,165,233,0.08)]">
+          <span className="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-lg bg-sky-500/20 group-hover:bg-sky-500/30 transition-colors">
+            <svg viewBox="0 0 20 20" fill="none" className="w-4 h-4 text-sky-400" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M10 2l6 2.5v5c0 3.5-2.5 6-6 7.5C4.5 15.5 2 13 2 9.5v-5L10 2z"/>
+              <path d="M7 10l2 2 4-4"/>
+            </svg>
+          </span>
+          <div className="flex flex-col leading-tight">
+            <span className="text-xs font-bold text-white tracking-wide">Safe & Secure</span>
+            <span className="text-[10px] text-white/50 font-medium">No malware, no ads</span>
+          </div>
+        </div>
       </motion.div>
     </section>
   );
