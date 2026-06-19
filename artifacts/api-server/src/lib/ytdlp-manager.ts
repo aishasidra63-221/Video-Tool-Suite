@@ -182,16 +182,150 @@ export function randomCountryCode(): string {
   return XFF_COUNTRIES[Math.floor(Math.random() * XFF_COUNTRIES.length)];
 }
 
+// ── Browser Fingerprint Spoofing via HTTP Headers ────────────────────────────
+// YouTube inspects HTTP headers to detect bots. Python's default headers are
+// instantly recognisable. We rotate realistic Chrome/Firefox/Edge profiles —
+// each with a matching User-Agent, sec-ch-ua, Accept-Language, and platform.
+//
+// Combined with --xff country rotation + client rotation this makes each
+// request look like a unique real user from a different browser and country.
+
+interface BrowserProfile {
+  name: string;
+  userAgent: string;
+  secChUa: string;
+  secChUaMobile: string;
+  secChUaPlatform: string;
+  acceptLanguage: string;
+  accept: string;
+}
+
+const BROWSER_PROFILES: BrowserProfile[] = [
+  // Chrome 124 on Windows — most common desktop browser worldwide
+  {
+    name: "Chrome/Win",
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    secChUa: '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    secChUaMobile: "?0",
+    secChUaPlatform: '"Windows"',
+    acceptLanguage: "en-US,en;q=0.9",
+    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+  },
+  // Chrome 124 on macOS
+  {
+    name: "Chrome/Mac",
+    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    secChUa: '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    secChUaMobile: "?0",
+    secChUaPlatform: '"macOS"',
+    acceptLanguage: "en-GB,en;q=0.9",
+    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+  },
+  // Chrome 123 on Android — mobile user
+  {
+    name: "Chrome/Android",
+    userAgent: "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.6312.118 Mobile Safari/537.36",
+    secChUa: '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
+    secChUaMobile: "?1",
+    secChUaPlatform: '"Android"',
+    acceptLanguage: "en-US,en;q=0.9",
+    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+  },
+  // Firefox 126 on Windows
+  {
+    name: "Firefox/Win",
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
+    secChUa: "",  // Firefox doesn't send sec-ch-ua
+    secChUaMobile: "",
+    secChUaPlatform: "",
+    acceptLanguage: "en-US,en;q=0.5",
+    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+  },
+  // Edge 124 on Windows
+  {
+    name: "Edge/Win",
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0",
+    secChUa: '"Chromium";v="124", "Microsoft Edge";v="124", "Not-A.Brand";v="99"',
+    secChUaMobile: "?0",
+    secChUaPlatform: '"Windows"',
+    acceptLanguage: "de-DE,de;q=0.9,en;q=0.8",
+    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+  },
+  // Chrome 124 on Linux — en-GB locale
+  {
+    name: "Chrome/Linux",
+    userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    secChUa: '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    secChUaMobile: "?0",
+    secChUaPlatform: '"Linux"',
+    acceptLanguage: "fr-FR,fr;q=0.9,en;q=0.8",
+    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+  },
+  // Safari on macOS — very different UA pattern
+  {
+    name: "Safari/Mac",
+    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
+    secChUa: "",  // Safari doesn't send sec-ch-ua
+    secChUaMobile: "",
+    secChUaPlatform: "",
+    acceptLanguage: "ja-JP,ja;q=0.9,en;q=0.8",
+    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  },
+  // Chrome 124 on Windows — Brazilian Portuguese locale
+  {
+    name: "Chrome/Win/BR",
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    secChUa: '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    secChUaMobile: "?0",
+    secChUaPlatform: '"Windows"',
+    acceptLanguage: "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+  },
+];
+
+/**
+ * Returns --add-header flags for yt-dlp that mimic a real browser.
+ * Each call picks a random browser profile — rotating UA, locale, and platform.
+ *
+ * NOTE: sec-ch-ua is intentionally excluded — its value contains commas and
+ * double-quotes that break shell argument parsing when passed to yt-dlp via
+ * --add-header. The User-Agent + Accept-Language + sec-fetch-* headers are
+ * sufficient to pass YouTube's HTTP-layer bot detection.
+ */
+export function getBrowserHeaderFlags(): string {
+  const profile = BROWSER_PROFILES[Math.floor(Math.random() * BROWSER_PROFILES.length)];
+  const headers: string[] = [];
+
+  // Only add headers whose values are shell-safe (no commas or inner quotes).
+  const addHeader = (name: string, value: string) => {
+    if (value) headers.push(`--add-header "${name}:${value}"`);
+  };
+
+  addHeader("User-Agent", profile.userAgent);
+  addHeader("Accept-Language", profile.acceptLanguage);
+  addHeader("Accept-Encoding", "gzip, deflate, br");
+  addHeader("Cache-Control", "no-cache");
+  addHeader("Pragma", "no-cache");
+  addHeader("Upgrade-Insecure-Requests", "1");
+  addHeader("sec-fetch-site", "none");
+  addHeader("sec-fetch-mode", "navigate");
+  addHeader("sec-fetch-user", "?1");
+  addHeader("sec-fetch-dest", "document");
+
+  logger.debug({ browser: profile.name, lang: profile.acceptLanguage }, "Browser fingerprint rotation");
+  return headers.join(" ");
+}
+
 // ── YouTube Client Rotation ─────────────────────────────────────────────────
 // Tested 2026-06: ios, android_embedded, android_testsuite, android_music
 // all return full HD (4K/1440p/1080p/720p/480p) without PO token.
 // android=360p only, mweb=error, tv_embedded=not supported.
+// ios broken in yt-dlp 2026.06+; tv_embedded added as replacement
 const YT_CLIENTS = [
-  "ios",
   "android_embedded",
   "android_testsuite",
   "android_music",
-  "android,ios",
+  "tv_embedded",
 ] as const;
 
 type YtClient = typeof YT_CLIENTS[number];

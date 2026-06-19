@@ -4,7 +4,7 @@ import { promisify } from "util";
 import { existsSync, statSync, createReadStream, unlink } from "fs";
 import https from "https";
 import { GetVideoInfoBody, GetDownloadUrlBody } from "@workspace/api-zod";
-import { getYtDlpBin, withYtClientRotation, hasCookies, getCookiesFlag, hasInstagramCookies, getInstagramCookiesFlag, getXffFlag } from "../lib/ytdlp-manager";
+import { getYtDlpBin, withYtClientRotation, hasCookies, getCookiesFlag, hasInstagramCookies, getInstagramCookiesFlag, getXffFlag, getBrowserHeaderFlags } from "../lib/ytdlp-manager";
 
 const execAsync = promisify(exec);
 const router = Router();
@@ -1600,7 +1600,7 @@ router.get("/stream", async (req, res) => {
       let fetchPromise = ytStreamInFlight.get(cdnCacheKey);
       if (!fetchPromise) {
         fetchPromise = (async (): Promise<string[]> => {
-          const getUrlClients = ["ios", "android_embedded", "android_testsuite", "android_music"] as const;
+          const getUrlClients = ["android_embedded", "android_testsuite", "android_music", "tv_embedded"] as const;
           for (const client of getUrlClients) {
             try {
               const { stdout: urlOut } = await execAsync(
