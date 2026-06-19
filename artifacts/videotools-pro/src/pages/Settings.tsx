@@ -1,6 +1,8 @@
 import { motion } from "framer-motion";
-import { Settings2, Download, Shield, Bell, Palette, Info } from "lucide-react";
-import { useState } from "react";
+import { Settings2, Download, Shield, Bell, Palette, Info, Cookie, CheckCircle2, XCircle, Loader2, ChevronDown, ChevronUp } from "lucide-react";
+import { useState, useEffect } from "react";
+
+const API_BASE = import.meta.env.BASE_URL?.replace(/\/$/, "") + "/api";
 
 function SettingRow({
   icon: Icon,
@@ -72,6 +74,171 @@ function Select({
   );
 }
 
+function CookiesSection() {
+  const [hasCookies, setHasCookies] = useState<boolean | null>(null);
+  const [cookieText, setCookieText] = useState("");
+  const [showInput, setShowInput] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [showGuide, setShowGuide] = useState(false);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/cookies/status`)
+      .then((r) => r.json())
+      .then((d) => setHasCookies(d.hasCookies))
+      .catch(() => setHasCookies(false));
+  }, []);
+
+  const saveCookies = async () => {
+    if (!cookieText.trim()) return;
+    setSaving(true);
+    setMessage(null);
+    try {
+      const r = await fetch(`${API_BASE}/cookies/save`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cookies: cookieText }),
+      });
+      const d = await r.json();
+      if (r.ok) {
+        setHasCookies(true);
+        setShowInput(false);
+        setCookieText("");
+        setMessage({ type: "success", text: "Cookies saved! Age-restricted videos will now work." });
+      } else {
+        setMessage({ type: "error", text: d.error || "Failed to save cookies." });
+      }
+    } catch {
+      setMessage({ type: "error", text: "Server error. Try again." });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const removeCookies = async () => {
+    setDeleting(true);
+    setMessage(null);
+    try {
+      await fetch(`${API_BASE}/cookies/delete`, { method: "DELETE" });
+      setHasCookies(false);
+      setMessage({ type: "success", text: "Cookies removed." });
+    } catch {
+      setMessage({ type: "error", text: "Failed to remove cookies." });
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <div className="glass rounded-2xl px-6 py-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-yellow-500/15 flex items-center justify-center shrink-0">
+            <Cookie className="w-4 h-4 text-yellow-400" />
+          </div>
+          <div>
+            <p className="font-semibold text-white text-sm">YouTube Cookies</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Unlock age-restricted & bot-blocked videos
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {hasCookies === null ? (
+            <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
+          ) : hasCookies ? (
+            <span className="flex items-center gap-1.5 text-xs text-green-400 font-medium bg-green-500/10 px-2.5 py-1 rounded-full">
+              <CheckCircle2 className="w-3.5 h-3.5" /> Active
+            </span>
+          ) : (
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground bg-white/5 px-2.5 py-1 rounded-full">
+              <XCircle className="w-3.5 h-3.5" /> Not set
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Guide toggle */}
+      <button
+        onClick={() => setShowGuide(!showGuide)}
+        className="w-full flex items-center justify-between text-xs text-primary/80 hover:text-primary transition-colors py-1"
+      >
+        <span>How to get YouTube cookies?</span>
+        {showGuide ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+      </button>
+
+      {showGuide && (
+        <div className="bg-white/5 rounded-xl p-4 text-xs text-muted-foreground space-y-2 leading-relaxed">
+          <p className="text-white font-medium">Step-by-step guide:</p>
+          <ol className="list-decimal list-inside space-y-1.5">
+            <li>Chrome mein <strong className="text-white">YouTube.com</strong> par jao aur login karo</li>
+            <li>Chrome Extension install karo: <strong className="text-white">"Get cookies.txt LOCALLY"</strong></li>
+            <li>YouTube tab par extension ka icon click karo</li>
+            <li><strong className="text-white">"Export"</strong> button dabao — cookies.txt download hogi</li>
+            <li>File ka poora content copy karo aur neeche paste karo</li>
+          </ol>
+          <p className="text-yellow-400/80 mt-2">⚠️ Sirf apne personal account ki cookies use karo.</p>
+        </div>
+      )}
+
+      {message && (
+        <div className={`flex items-center gap-2 text-xs px-3 py-2 rounded-lg ${
+          message.type === "success" ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"
+        }`}>
+          {message.type === "success" ? <CheckCircle2 className="w-3.5 h-3.5 shrink-0" /> : <XCircle className="w-3.5 h-3.5 shrink-0" />}
+          {message.text}
+        </div>
+      )}
+
+      <div className="flex gap-2">
+        {!hasCookies ? (
+          <button
+            onClick={() => setShowInput(!showInput)}
+            className="flex-1 text-xs bg-primary/20 hover:bg-primary/30 text-primary border border-primary/30 rounded-lg px-4 py-2 transition-colors font-medium"
+          >
+            {showInput ? "Cancel" : "+ Add Cookies"}
+          </button>
+        ) : (
+          <>
+            <button
+              onClick={() => setShowInput(!showInput)}
+              className="flex-1 text-xs bg-white/10 hover:bg-white/15 text-white border border-white/20 rounded-lg px-4 py-2 transition-colors font-medium"
+            >
+              {showInput ? "Cancel" : "Update Cookies"}
+            </button>
+            <button
+              onClick={removeCookies}
+              disabled={deleting}
+              className="text-xs bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 rounded-lg px-4 py-2 transition-colors font-medium disabled:opacity-50"
+            >
+              {deleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Remove"}
+            </button>
+          </>
+        )}
+      </div>
+
+      {showInput && (
+        <div className="space-y-2">
+          <textarea
+            value={cookieText}
+            onChange={(e) => setCookieText(e.target.value)}
+            placeholder="# Netscape HTTP Cookie File&#10;# cookies.txt content yahan paste karo..."
+            className="w-full h-32 text-xs font-mono bg-black/40 border border-white/20 rounded-xl px-3 py-3 text-white/80 placeholder-white/20 focus:outline-none focus:ring-2 focus:ring-primary/40 resize-none"
+          />
+          <button
+            onClick={saveCookies}
+            disabled={saving || !cookieText.trim()}
+            className="w-full text-sm bg-primary hover:bg-primary/90 text-white rounded-xl px-4 py-2.5 font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+          >
+            {saving ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving...</> : "Save Cookies"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Settings() {
   const [autoDownload, setAutoDownload] = useState(false);
   const [notifications, setNotifications] = useState(true);
@@ -97,6 +264,9 @@ export default function Settings() {
         </div>
 
         <div className="space-y-6">
+          {/* YouTube Cookies — top priority */}
+          <CookiesSection />
+
           <div className="glass rounded-2xl px-6 py-2">
             <p className="text-xs font-bold uppercase tracking-widest text-primary/70 pt-4 pb-1">
               Downloads
@@ -166,8 +336,7 @@ export default function Settings() {
             <div className="flex items-start gap-3">
               <Info className="w-4 h-4 text-muted-foreground mt-0.5 shrink-0" />
               <p className="text-xs text-muted-foreground leading-relaxed">
-                Settings are saved in your browser and apply only to this device. No account is
-                required. Clearing browser data will reset these preferences.
+                Download settings are saved in your browser. Cookies are stored securely on the server and used only for video extraction.
               </p>
             </div>
           </div>

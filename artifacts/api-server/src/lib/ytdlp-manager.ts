@@ -1,10 +1,11 @@
 /**
  * yt-dlp Manager — auto-updates binary on startup, provides resilient
  * YouTube client rotation so YouTube can never permanently block us.
+ * Also manages YouTube cookies for bot-challenge bypass.
  */
 import { execSync, exec } from "child_process";
 import { promisify } from "util";
-import { existsSync, chmodSync, writeFileSync, readFileSync } from "fs";
+import { existsSync, chmodSync, writeFileSync, readFileSync, unlinkSync } from "fs";
 import { logger } from "./logger";
 
 const execAsync = promisify(exec);
@@ -12,6 +13,29 @@ const execAsync = promisify(exec);
 // ── Binary paths ────────────────────────────────────────────────────────────
 const CUSTOM_BIN = "/home/runner/workspace/bin/yt-dlp-latest";
 const VERSION_FILE = "/home/runner/workspace/bin/.yt-dlp-version";
+
+// ── Cookies ──────────────────────────────────────────────────────────────────
+export const COOKIES_FILE = "/home/runner/workspace/bin/youtube-cookies.txt";
+
+export function hasCookies(): boolean {
+  return existsSync(COOKIES_FILE);
+}
+
+export function saveCookies(content: string): void {
+  writeFileSync(COOKIES_FILE, content, "utf8");
+  logger.info("YouTube cookies saved");
+}
+
+export function deleteCookies(): void {
+  if (existsSync(COOKIES_FILE)) {
+    unlinkSync(COOKIES_FILE);
+    logger.info("YouTube cookies deleted");
+  }
+}
+
+export function getCookiesFlag(): string {
+  return hasCookies() ? `--cookies "${COOKIES_FILE}"` : "";
+}
 
 let resolvedBin: string | null = null;
 

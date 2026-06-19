@@ -3,7 +3,7 @@ import { exec, spawn } from "child_process";
 import { promisify } from "util";
 import { existsSync, statSync, createReadStream, unlink } from "fs";
 import { GetVideoInfoBody, GetDownloadUrlBody } from "@workspace/api-zod";
-import { getYtDlpBin, withYtClientRotation } from "../lib/ytdlp-manager";
+import { getYtDlpBin, withYtClientRotation, hasCookies, getCookiesFlag } from "../lib/ytdlp-manager";
 
 const execAsync = promisify(exec);
 const router = Router();
@@ -329,9 +329,9 @@ router.post("/info", async (req, res) => {
 
   const isYouTube = platform === "YouTube";
 
-  const runInfo = async (clientFlag = ""): Promise<string> => {
+  const runInfo = async (clientFlag = "", extraFlags = ""): Promise<string> => {
     const bin = getYtDlpBin();
-    const cmd = `"${bin}" --dump-json ${BASE_FLAGS} ${clientFlag} "${url}"`;
+    const cmd = `"${bin}" --dump-json ${BASE_FLAGS} ${clientFlag} ${extraFlags} "${url}"`;
     const { stdout } = await execAsync(cmd, { timeout: 35000 });
     return stdout;
   };
@@ -348,9 +348,23 @@ router.post("/info", async (req, res) => {
       // withYtClientRotation tries clients in health-ranked order:
       // android,ios → ios → android → mweb
       // Failed clients get a 5-min cooldown; successful ones get priority.
-      const { result: out } = await withYtClientRotation(
-        (flag) => runInfo(flag),
-      );
+      // If bot-check error and cookies available, retry with --cookies flag.
+      let out: string;
+      try {
+        const { result } = await withYtClientRotation((flag) => runInfo(flag));
+        out = result;
+      } catch (firstErr) {
+        const errMsg = ((firstErr as Error & { stderr?: string }).stderr || (firstErr as Error).message || "");
+        const isBotBlock = errMsg.toLowerCase().includes("sign in") || errMsg.toLowerCase().includes("bot");
+        if (isBotBlock && hasCookies()) {
+          req.log.info("Bot block detected, retrying with cookies");
+          const cookiesFlag = getCookiesFlag();
+          const { result } = await withYtClientRotation((flag) => runInfo(flag, cookiesFlag));
+          out = result;
+        } else {
+          throw firstErr;
+        }
+      }
       stdout = out;
       setCache(url, stdout);
     } else {
@@ -384,12 +398,13 @@ router.post("/info", async (req, res) => {
     }
     req.log.error({ err: stderr }, "yt-dlp info failed");
 
-    if (stderr.includes("Sign in") || stderr.includes("log in") || stderr.includes("login")) {
-      res.status(422).json({ error: "This video requires login and cannot be downloaded." });
+    if (stderr.includes("Sign in") || stderr.includes("log in") || stderr.includes("login") || stderr.includes("bot")) {
+      const cookiesHint = hasCookies() ? "" : " Settings mein apni YouTube cookies add karo — isse yeh videos bhi kaam karenge.";
+      res.status(422).json({ error: `YouTube is verifying this video and blocking server access.${cookiesHint}`, code: "BOT_BLOCK" });
     } else if (stderr.includes("Private") || stderr.includes("not available") || stderr.includes("unavailable")) {
       res.status(422).json({ error: "This video is private or unavailable." });
-    } else if (stderr.includes("bot") || stderr.includes("verify") || stderr.includes("not available on this app") || stderr.includes("No video formats found")) {
-      res.status(422).json({ error: "YouTube is blocking this video from server access. Try a different video." });
+    } else if (stderr.includes("verify") || stderr.includes("not available on this app") || stderr.includes("No video formats found")) {
+      res.status(422).json({ error: "YouTube is blocking this video. Try a different video or add cookies in Settings." });
     } else if (stderr.includes("unsupported URL")) {
       res.status(422).json({ error: "URL not supported. Please use a direct video link." });
     } else if (platform === "TikTok") {
