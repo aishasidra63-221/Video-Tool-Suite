@@ -9,6 +9,40 @@ import { getYtDlpBin, withYtClientRotation, hasCookies, getCookiesFlag } from ".
 const execAsync = promisify(exec);
 const router = Router();
 
+// ── User-Agent rotation (avoids fingerprinting / detection) ──────────────────
+const USER_AGENTS = [
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
+  "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+];
+function randomUA(): string {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
+// ── Concurrency Semaphore (caps simultaneous Instagram fetches) ───────────────
+class Semaphore {
+  private slots: number;
+  private queue: Array<() => void> = [];
+  constructor(slots: number) { this.slots = slots; }
+  acquire(): Promise<void> {
+    if (this.slots > 0) { this.slots--; return Promise.resolve(); }
+    return new Promise((resolve) => this.queue.push(resolve));
+  }
+  release(): void {
+    if (this.queue.length > 0) { this.queue.shift()!(); }
+    else { this.slots++; }
+  }
+}
+const igSemaphore = new Semaphore(4); // max 4 concurrent Instagram fetches
+
+// ── In-flight deduplication (same URL → share one fetch) ─────────────────────
+// Prevents N concurrent users hitting the same URL from making N Instagram requests
+const igInFlight = new Map<string, Promise<InstagramData>>();
+
 const PLATFORM_PATTERNS: Record<string, RegExp[]> = {
   YouTube: [/youtube\.com\/watch/, /youtu\.be\//, /youtube\.com\/shorts\//],
   TikTok: [/tiktok\.com\//],
@@ -254,32 +288,35 @@ interface InstagramData {
   duration: number | null;
 }
 
-function igHttpGet(url: string, maxRedirects = 6): Promise<string> {
+function igHttpGet(url: string, maxRedirects = 6, ua?: string): Promise<string> {
   return new Promise((resolve, reject) => {
     if (maxRedirects <= 0) return reject(new Error("Instagram: too many redirects"));
     let parsed: URL;
     try { parsed = new URL(url); } catch { return reject(new Error("Instagram: invalid URL")); }
+    const userAgent = ua || randomUA();
     const req = https.request({
       hostname: parsed.hostname,
       path: parsed.pathname + parsed.search,
       method: "GET",
       headers: {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "User-Agent": userAgent,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "identity",
-        "Referer": "https://www.instagram.com/",
+        "Referer": "https://www.google.com/",
         "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
         "sec-fetch-dest": "document",
         "sec-fetch-mode": "navigate",
-        "sec-fetch-site": "none",
+        "sec-fetch-site": "cross-site",
+        "Upgrade-Insecure-Requests": "1",
       },
     }, (res) => {
       if (res.statusCode && [301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
         const loc = res.headers.location.startsWith("http")
           ? res.headers.location
           : "https://www.instagram.com" + res.headers.location;
-        igHttpGet(loc, maxRedirects - 1).then(resolve).catch(reject);
+        igHttpGet(loc, maxRedirects - 1, userAgent).then(resolve).catch(reject);
         return;
       }
       let data = "";
@@ -287,12 +324,50 @@ function igHttpGet(url: string, maxRedirects = 6): Promise<string> {
       res.on("end", () => resolve(data));
     });
     req.on("error", reject);
-    req.setTimeout(20000, () => { req.destroy(); reject(new Error("Instagram fetch timeout")); });
+    req.setTimeout(18000, () => { req.destroy(); reject(new Error("Instagram fetch timeout")); });
     req.end();
   });
 }
 
-async function instagramFetch(videoUrl: string): Promise<InstagramData> {
+// ── Instagram oEmbed (official API — no auth for public posts) ────────────────
+// Returns metadata fast without scraping; does NOT return video URL
+function igOembed(shortcode: string): Promise<{ author: string; thumbnail: string | null; title: string } | null> {
+  return new Promise((resolve) => {
+    const postUrl = encodeURIComponent(`https://www.instagram.com/p/${shortcode}/`);
+    const path = `/oembed/?url=${postUrl}&maxwidth=640`;
+    const req = https.request({
+      hostname: "api.instagram.com",
+      path,
+      method: "GET",
+      headers: {
+        "User-Agent": randomUA(),
+        "Accept": "application/json",
+      },
+    }, (res) => {
+      let data = "";
+      res.on("data", (c) => (data += c));
+      res.on("end", () => {
+        try {
+          const json = JSON.parse(data);
+          if (json.author_name) {
+            resolve({
+              author: json.author_name as string,
+              thumbnail: (json.thumbnail_url as string) || null,
+              title: (json.title as string) || "",
+            });
+          } else {
+            resolve(null);
+          }
+        } catch { resolve(null); }
+      });
+    });
+    req.on("error", () => resolve(null));
+    req.setTimeout(8000, () => { req.destroy(); resolve(null); });
+    req.end();
+  });
+}
+
+async function _instagramFetchCore(videoUrl: string): Promise<InstagramData> {
   const shortcodeMatch = videoUrl.match(/instagram\.com\/(p|reel|tv)\/([A-Za-z0-9_-]+)/);
   if (!shortcodeMatch) throw new Error("Instagram: invalid URL — must be a post, reel, or IGTV link");
   const shortcode = shortcodeMatch[2];
@@ -302,11 +377,23 @@ async function instagramFetch(videoUrl: string): Promise<InstagramData> {
   let title = "Instagram Video";
   let uploader: string | null = null;
 
-  // ── Layer 1 + 2 run in PARALLEL for speed ─────────────────────────────────
-  const [embedResult, mainResult] = await Promise.allSettled([
+  // ── Layer 0 + Layer 1 + Layer 2 run in PARALLEL for max speed ─────────────
+  // Layer 0: oEmbed (official Instagram API — fast, reliable for metadata)
+  // Layer 1: Embed page (video URL + metadata via public embed endpoint)
+  // Layer 2: Main page og: tags (fallback for video URL)
+  const [oembedResult, embedResult, mainResult] = await Promise.allSettled([
+    igOembed(shortcode),
     igHttpGet(`https://www.instagram.com/p/${shortcode}/embed/captioned/`),
     igHttpGet(`https://www.instagram.com/p/${shortcode}/`),
   ]);
+
+  // ── Apply oEmbed metadata first (fastest, most reliable) ─────────────────
+  if (oembedResult.status === "fulfilled" && oembedResult.value) {
+    const oe = oembedResult.value;
+    if (oe.author) uploader = oe.author;
+    if (oe.thumbnail) thumbnail = oe.thumbnail;
+    if (oe.title && oe.title !== `Video by ${oe.author}`) title = oe.title;
+  }
 
   // ── Process Layer 1: embed page ───────────────────────────────────────────
   if (embedResult.status === "fulfilled") {
@@ -417,6 +504,24 @@ async function instagramFetch(videoUrl: string): Promise<InstagramData> {
   return { title, uploader, thumbnail, videoUrl: videoUrl_, duration: null };
 }
 
+// ── Public wrapper: semaphore + in-flight deduplication ───────────────────────
+async function instagramFetch(videoUrl: string): Promise<InstagramData> {
+  const existing = igInFlight.get(videoUrl);
+  if (existing) return existing;
+
+  const promise = igSemaphore.acquire().then(async () => {
+    try {
+      return await _instagramFetchCore(videoUrl);
+    } finally {
+      igSemaphore.release();
+      igInFlight.delete(videoUrl);
+    }
+  });
+
+  igInFlight.set(videoUrl, promise);
+  return promise;
+}
+
 function detectPlatform(url: string): string {
   for (const [platform, patterns] of Object.entries(PLATFORM_PATTERNS)) {
     if (patterns.some((p) => p.test(url))) return platform;
@@ -427,10 +532,11 @@ function detectPlatform(url: string): string {
 /** Base flags always applied to every yt-dlp call */
 const BASE_FLAGS = "--no-playlist --no-warnings --socket-timeout 20 --no-check-formats";
 
-// ── Simple in-memory cache (5 min TTL) ────────────────────────────────────
+// ── In-memory cache — short TTL for YouTube, longer for Instagram/TikTok ──────
 interface CacheEntry { data: string; expiresAt: number; }
 const infoCache = new Map<string, CacheEntry>();
-const CACHE_TTL_MS = 5 * 60 * 1000;
+const CACHE_TTL_MS        = 5  * 60 * 1000;  // 5 min (YouTube / default)
+const CACHE_TTL_LONG_MS   = 25 * 60 * 1000;  // 25 min (Instagram / Snapchat / TikTok)
 
 function getCached(key: string): string | null {
   const entry = infoCache.get(key);
@@ -438,10 +544,9 @@ function getCached(key: string): string | null {
   if (Date.now() > entry.expiresAt) { infoCache.delete(key); return null; }
   return entry.data;
 }
-function setCache(key: string, data: string) {
-  infoCache.set(key, { data, expiresAt: Date.now() + CACHE_TTL_MS });
-  // Prevent unbounded growth
-  if (infoCache.size > 200) {
+function setCache(key: string, data: string, ttl = CACHE_TTL_MS) {
+  infoCache.set(key, { data, expiresAt: Date.now() + ttl });
+  if (infoCache.size > 500) {
     const oldest = infoCache.keys().next().value;
     if (oldest) infoCache.delete(oldest);
   }
@@ -748,7 +853,7 @@ router.post("/info", async (req, res) => {
         tk = JSON.parse(cached);
       } else {
         tk = await tikwmFetch(url);
-        setCache(url, JSON.stringify(tk));
+        setCache(url, JSON.stringify(tk), CACHE_TTL_LONG_MS);
       }
       const formats: Array<{
         formatId: string; quality: string; label: string;
@@ -773,7 +878,7 @@ router.post("/info", async (req, res) => {
         snap = JSON.parse(cached);
       } else {
         snap = await snapchatFetch(url);
-        setCache(url, JSON.stringify(snap));
+        setCache(url, JSON.stringify(snap), CACHE_TTL_LONG_MS);
       }
       return res.json({
         url,
@@ -797,7 +902,7 @@ router.post("/info", async (req, res) => {
         ig = JSON.parse(cached);
       } else {
         ig = await instagramFetch(url);
-        setCache(url, JSON.stringify(ig));
+        setCache(url, JSON.stringify(ig), CACHE_TTL_LONG_MS);
       }
       return res.json({
         url,
@@ -917,7 +1022,7 @@ router.post("/download", async (req, res) => {
         ig = JSON.parse(cached);
       } else {
         ig = await instagramFetch(url);
-        setCache(url, JSON.stringify(ig));
+        setCache(url, JSON.stringify(ig), CACHE_TTL_LONG_MS);
       }
       if (!ig.videoUrl) {
         res.status(422).json({ error: "Instagram video URL not available." });
@@ -945,7 +1050,7 @@ router.post("/download", async (req, res) => {
         snap = JSON.parse(cached);
       } else {
         snap = await snapchatFetch(url);
-        setCache(url, JSON.stringify(snap));
+        setCache(url, JSON.stringify(snap), CACHE_TTL_LONG_MS);
       }
       if (!snap.videoUrl) {
         res.status(422).json({ error: "Snapchat video URL not available." });
@@ -975,7 +1080,7 @@ router.post("/download", async (req, res) => {
         tk = JSON.parse(cached);
       } else {
         tk = await tikwmFetch(url);
-        setCache(url, JSON.stringify(tk));
+        setCache(url, JSON.stringify(tk), CACHE_TTL_LONG_MS);
       }
       let directUrl: string;
       let filename: string;
