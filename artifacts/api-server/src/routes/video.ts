@@ -1077,7 +1077,23 @@ router.post("/info", async (req, res) => {
 
     const firstLine = stdout.trim().split("\n")[0];
     const info: YtDlpInfo = JSON.parse(firstLine);
-    const formats = buildFormats(info.formats);
+
+    // YouTube: return virtual quality tiers — yt-dlp format list is unreliable
+    // without PO token (mid-2026). Actual availability resolved at download time.
+    const formats = isYouTube
+      ? [
+          { formatId: "yt_2160", quality: "4K",    label: "4K Ultra HD",     type: "video" as const, filesize: null, badge: "4K" },
+          { formatId: "yt_1440", quality: "1440p",  label: "1440p QHD",       type: "video" as const, filesize: null, badge: "QHD" },
+          { formatId: "yt_1080", quality: "1080p",  label: "1080p Full HD",   type: "video" as const, filesize: null, badge: "Full HD" },
+          { formatId: "yt_720",  quality: "720p",   label: "720p HD",         type: "video" as const, filesize: null, badge: "HD" },
+          { formatId: "yt_480",  quality: "480p",   label: "480p SD",         type: "video" as const, filesize: null, badge: null },
+          { formatId: "yt_360",  quality: "360p",   label: "360p SD",         type: "video" as const, filesize: null, badge: null },
+          { formatId: "yt_240",  quality: "240p",   label: "240p Low",        type: "video" as const, filesize: null, badge: null },
+          { formatId: "bestaudio:audio:192", quality: "192kbps", label: "MP3 ~192kbps • High Quality", type: "audio" as const, filesize: null, badge: "Best Quality" },
+          { formatId: "bestaudio:audio:128", quality: "128kbps", label: "MP3 ~128kbps • Standard",     type: "audio" as const, filesize: null, badge: null },
+          { formatId: "bestaudio:audio:64",  quality: "64kbps",  label: "MP3 ~64kbps • Small Size",    type: "audio" as const, filesize: null, badge: null },
+        ]
+      : buildFormats(info.formats);
 
     res.json({
       url,
@@ -1252,6 +1268,15 @@ router.post("/download", async (req, res) => {
   }
 
   const isYtDownload = /youtube\.com\/|youtu\.be\//.test(url);
+
+  // Virtual YouTube format IDs (yt_2160, yt_1080, etc.) — always use stream endpoint
+  // yt-dlp resolves best available quality at download time via format selector
+  if (isYtDownload && actualFormatId.startsWith("yt_")) {
+    const height = actualFormatId.replace("yt_", "");
+    const streamUrl = `/api/video/stream?url=${encodeURIComponent(url)}&formatId=${encodeURIComponent(actualFormatId)}&audio=false`;
+    res.json({ downloadUrl: streamUrl, filename: `youtube_${height}p.mkv` });
+    return;
+  }
 
   // Helper: try --get-url with a specific client flag
   const tryGetUrl = async (clientFlag: string) => {
@@ -1460,6 +1485,15 @@ router.get("/stream", async (req, res) => {
     const tmpId = `vt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const tmpBase = `/tmp/${tmpId}`;
 
+    // Map virtual yt_XXXX format IDs to proper yt-dlp format selectors
+    // e.g. yt_1080 → bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]
+    const resolveYtFormat = (fid: string): string => {
+      if (!fid.startsWith("yt_")) return `${fid}+bestaudio/${fid}/best`;
+      const h = fid.replace("yt_", "");
+      return `bestvideo[height<=${h}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${h}]+bestaudio/best[height<=${h}]/best`;
+    };
+    const resolvedFormat = resolveYtFormat(formatId ?? "");
+
     const streamTempFile = (tmpFile: string) => {
       if (!existsSync(tmpFile)) {
         if (!res.headersSent) res.status(500).json({ error: "Download failed" });
@@ -1475,7 +1509,7 @@ router.get("/stream", async (req, res) => {
     };
 
     const buildArgs = (extraArgs: string[]) => [
-      "-f", `${formatId}+bestaudio/${formatId}/best`,
+      "-f", resolvedFormat,
       "--merge-output-format", "mkv",
       "--no-warnings", "--socket-timeout", "20", "--no-check-formats",
       "--postprocessor-args", "merger:-allowed_extensions ALL",

@@ -23,12 +23,15 @@ description: Per-platform yt-dlp behavior oddities, YouTube client rotation stra
 - Sorts clients by health before each attempt
 - Skips rotation on permanent errors (login, private, copyright)
 
-## YouTube HD Video — info extraction
+## YouTube HD Video — info extraction (UPDATED mid-2026)
 
-iOS/android,ios clients return HD formats (232=720p, 270=1080p, 614=1080p vp9, 620=1440p, 625=2160p) directly from execAsync — no injection needed. Previous workaround of injecting virtual format IDs (232, 270) was for the default web client which was blocked.
+**All clients now return only format 18 (360p) for the /info endpoint** — YouTube enforces PO token for DASH HD formats server-side, so format listing is unreliable regardless of client.
 
-**Why:**
-Previous strategy (run default+android in parallel, inject HD ids if none found) was a workaround for web client being blocked. iOS client solved it cleanly.
+**Fix:** Return hardcoded virtual format IDs (`yt_2160`, `yt_1440`, `yt_1080`, `yt_720`, `yt_480`, `yt_360`, `yt_240`) in the info endpoint. These are resolved to proper yt-dlp format selectors (`bestvideo[height<=N][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=N]+bestaudio/best[height<=N]/best`) at download/stream time. This approach always works because yt-dlp picks the best available format that YouTube serves.
+
+**Why:** Direct format listing from yt-dlp `--dump-json` only returns format 18 (360p combined) without PO token. Virtual IDs let yt-dlp choose at download time when it has more context/auth.
+
+**Download routing:** `yt_XXXX` format IDs always go to `/stream` endpoint (never direct CDN) because HD always needs video+audio merge.
 
 ## YouTube audio stream
 
