@@ -90,6 +90,102 @@ interface TikWMData {
   author?: { nickname?: string; avatar?: string };
 }
 
+// ── Snapchat Scraper — extracts video from __NEXT_DATA__ like competitors ─────
+interface SnapchatData {
+  title: string;
+  thumbnail: string | null;
+  videoUrl: string;
+  duration: number | null;
+}
+
+function snapHttpGet(url: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const options = {
+      hostname: parsed.hostname,
+      path: parsed.pathname + parsed.search,
+      method: "GET",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "identity",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Upgrade-Insecure-Requests": "1",
+      },
+    };
+    const req = https.request(options, (res) => {
+      // Follow redirect
+      if ((res.statusCode === 301 || res.statusCode === 302) && res.headers.location) {
+        snapHttpGet(res.headers.location).then(resolve).catch(reject);
+        return;
+      }
+      let data = "";
+      res.on("data", (chunk) => (data += chunk));
+      res.on("end", () => resolve(data));
+    });
+    req.on("error", reject);
+    req.setTimeout(20000, () => { req.destroy(); reject(new Error("Snapchat fetch timeout")); });
+    req.end();
+  });
+}
+
+// Recursively find all string values matching a predicate in a nested object
+function deepFindStrings(obj: unknown, predicate: (s: string) => boolean, results: string[] = []): string[] {
+  if (typeof obj === "string") {
+    if (predicate(obj)) results.push(obj);
+  } else if (Array.isArray(obj)) {
+    for (const item of obj) deepFindStrings(item, predicate, results);
+  } else if (obj && typeof obj === "object") {
+    for (const val of Object.values(obj)) deepFindStrings(val, predicate, results);
+  }
+  return results;
+}
+
+async function snapchatFetch(videoUrl: string): Promise<SnapchatData> {
+  const html = await snapHttpGet(videoUrl);
+
+  // Extract __NEXT_DATA__ JSON from the page
+  const match = html.match(/<script[^>]+id="__NEXT_DATA__"[^>]*>([^<]+)<\/script>/);
+  if (!match) throw new Error("Snapchat: __NEXT_DATA__ not found");
+
+  let nextData: unknown;
+  try {
+    nextData = JSON.parse(match[1]);
+  } catch {
+    throw new Error("Snapchat: failed to parse __NEXT_DATA__");
+  }
+
+  // Find all mp4 video URLs
+  const mp4Urls = deepFindStrings(nextData, (s) =>
+    (s.includes(".mp4") || s.includes("video/mp4") || s.includes("snapchat.com/video")) &&
+    (s.startsWith("http://") || s.startsWith("https://"))
+  );
+
+  if (!mp4Urls.length) throw new Error("Snapchat: no video URL found in page");
+
+  // Find thumbnail (jpeg/webp image URL)
+  const thumbUrls = deepFindStrings(nextData, (s) =>
+    (s.includes(".jpg") || s.includes(".jpeg") || s.includes(".webp") || s.includes("thumbnail")) &&
+    s.startsWith("https://") && !s.includes(".mp4")
+  );
+
+  // Find title from og:title or page props
+  const titleMatch = html.match(/<meta[^>]+property="og:title"[^>]+content="([^"]+)"/);
+  const title = titleMatch ? titleMatch[1].replace(" | Snapchat", "").trim() : "Snapchat Video";
+
+  return {
+    title,
+    thumbnail: thumbUrls[0] || null,
+    videoUrl: mp4Urls[0],
+    duration: null,
+  };
+}
+
 function detectPlatform(url: string): string {
   for (const [platform, patterns] of Object.entries(PLATFORM_PATTERNS)) {
     if (patterns.some((p) => p.test(url))) return platform;
@@ -394,13 +490,14 @@ router.post("/info", async (req, res) => {
   const platform = detectPlatform(url);
   if (platform === "Unknown") {
     res.status(400).json({
-      error: "Unsupported platform. We support YouTube and TikTok.",
+      error: "Unsupported platform. We support YouTube, TikTok and Snapchat.",
     });
     return;
   }
 
   const isYouTube = platform === "YouTube";
   const isTikTok = platform === "TikTok";
+  const isSnapchat = platform === "Snapchat";
 
   const runInfo = async (clientFlag = "", extraFlags = ""): Promise<string> => {
     const bin = getYtDlpBin();
@@ -432,6 +529,29 @@ router.post("/info", async (req, res) => {
         url, title: tk.title || "TikTok Video",
         thumbnail: tk.cover || null, duration: tk.duration || null,
         platform, formats,
+      });
+    }
+
+    // ── Snapchat: scrape __NEXT_DATA__ like competitors do ───────────────────
+    if (isSnapchat) {
+      const cached = getCached(url);
+      let snap: SnapchatData;
+      if (cached) {
+        req.log.info("cache hit (snapchat)");
+        snap = JSON.parse(cached);
+      } else {
+        snap = await snapchatFetch(url);
+        setCache(url, JSON.stringify(snap));
+      }
+      return res.json({
+        url,
+        title: snap.title || "Snapchat Video",
+        thumbnail: snap.thumbnail || null,
+        duration: snap.duration || null,
+        platform,
+        formats: [
+          { formatId: "snapchat:video", quality: "HD", label: "Video (MP4)", type: "video", filesize: null, badge: "HD" },
+        ],
       });
     }
 
@@ -527,6 +647,29 @@ router.post("/download", async (req, res) => {
   if (!isValidUrl(url)) {
     res.status(400).json({ error: "Invalid URL." });
     return;
+  }
+
+  // ── Snapchat: re-fetch from cache or scrape again
+  if (/snapchat\.com\//.test(url)) {
+    try {
+      const cached = getCached(url);
+      let snap: SnapchatData;
+      if (cached) {
+        snap = JSON.parse(cached);
+      } else {
+        snap = await snapchatFetch(url);
+        setCache(url, JSON.stringify(snap));
+      }
+      if (!snap.videoUrl) {
+        res.status(422).json({ error: "Snapchat video URL not available." });
+        return;
+      }
+      res.json({ downloadUrl: snap.videoUrl, filename: "snapchat_video.mp4" });
+      return;
+    } catch (err) {
+      res.status(422).json({ error: "Failed to get Snapchat video. Make sure it's a public Spotlight video." });
+      return;
+    }
   }
 
   // ── TikTok: format IDs are "tiktok:hd", "tiktok:sd", "tiktok:audio"
