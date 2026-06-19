@@ -21,6 +21,7 @@ export function ResultSection({
 }) {
   const [activeTab, setActiveTab] = useState<"video" | "audio">("video");
   const [downloadingFormatId, setDownloadingFormatId] = useState<string | null>(null);
+  const [downloadingThumb, setDownloadingThumb] = useState(false);
   const getDownloadUrl = useGetDownloadUrl();
 
   const handleDownload = (url: string, formatId: string) => {
@@ -46,7 +47,8 @@ export function ResultSection({
   };
 
   const handleThumbnailDownload = (url: string) => {
-    if (!url) return;
+    if (!url || downloadingThumb) return;
+    setDownloadingThumb(true);
     const proxyUrl = `/api/video/thumbnail?url=${encodeURIComponent(url)}`;
     const a = document.createElement("a");
     a.href = proxyUrl;
@@ -54,6 +56,7 @@ export function ResultSection({
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+    setTimeout(() => setDownloadingThumb(false), 3000);
   };
 
   if (!isLoading && !info && !error) return null;
@@ -158,11 +161,15 @@ export function ResultSection({
 
                 <button
                   onClick={() => handleThumbnailDownload(info.thumbnail || "")}
-                  disabled={!info.thumbnail}
-                  className="w-full flex items-center justify-center gap-2 bg-white/10 hover:bg-white/20 text-white px-4 py-2.5 rounded-xl font-medium transition-colors text-sm disabled:opacity-40"
+                  disabled={!info.thumbnail || downloadingThumb}
+                  className="w-full flex items-center justify-center gap-2 bg-white/10 hover:bg-white/20 text-white px-4 py-2.5 rounded-xl font-medium transition-colors text-sm disabled:opacity-50"
                 >
-                  <ImageDown className="w-4 h-4" />
-                  Download Thumbnail
+                  {downloadingThumb ? (
+                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  ) : (
+                    <ImageDown className="w-4 h-4" />
+                  )}
+                  {downloadingThumb ? "Downloading..." : "Download Thumbnail"}
                 </button>
               </div>
 
