@@ -1087,8 +1087,6 @@ router.post("/info", async (req, res) => {
           { formatId: "yt_1080", quality: "1080p",  label: "1080p Full HD",   type: "video" as const, filesize: null, badge: "Full HD" },
           { formatId: "yt_720",  quality: "720p",   label: "720p HD",         type: "video" as const, filesize: null, badge: "HD" },
           { formatId: "yt_480",  quality: "480p",   label: "480p SD",         type: "video" as const, filesize: null, badge: null },
-          { formatId: "yt_360",  quality: "360p",   label: "360p SD",         type: "video" as const, filesize: null, badge: null },
-          { formatId: "yt_240",  quality: "240p",   label: "240p Low",        type: "video" as const, filesize: null, badge: null },
           { formatId: "bestaudio:audio:192", quality: "192kbps", label: "MP3 ~192kbps • High Quality", type: "audio" as const, filesize: null, badge: "Best Quality" },
           { formatId: "bestaudio:audio:128", quality: "128kbps", label: "MP3 ~128kbps • Standard",     type: "audio" as const, filesize: null, badge: null },
           { formatId: "bestaudio:audio:64",  quality: "64kbps",  label: "MP3 ~64kbps • Small Size",    type: "audio" as const, filesize: null, badge: null },
