@@ -21,18 +21,25 @@ export function ResultSection({
   onRetry?: () => void,
 }) {
   const [activeTab, setActiveTab] = useState<'video' | 'audio'>('video');
+  const [downloadingFormatId, setDownloadingFormatId] = useState<string | null>(null);
   const getDownloadUrl = useGetDownloadUrl();
 
   const handleDownload = (url: string, formatId: string) => {
+    if (downloadingFormatId) return;
+    setDownloadingFormatId(formatId);
     getDownloadUrl.mutate({ data: { url, formatId } }, {
       onSuccess: (data) => {
-        // Trigger programmatic download
         const a = document.createElement('a');
         a.href = data.downloadUrl;
         a.download = data.filename || 'download';
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
+        // Keep spinner for 3s after triggering — browser needs time to start the download
+        setTimeout(() => setDownloadingFormatId(null), 3000);
+      },
+      onError: () => {
+        setDownloadingFormatId(null);
       }
     });
   };
@@ -192,10 +199,10 @@ export function ResultSection({
                           </div>
                           <button
                             onClick={() => handleDownload(info.url, format.formatId)}
-                            disabled={getDownloadUrl.isPending}
-                            className="flex items-center justify-center w-12 h-12 rounded-xl bg-green-500/20 text-green-400 hover:bg-green-500 hover:text-white transition-all shadow-[0_0_10px_rgba(34,197,94,0.2)] hover:shadow-[0_0_20px_rgba(34,197,94,0.4)] disabled:opacity-50"
+                            disabled={!!downloadingFormatId}
+                            className="flex items-center justify-center w-12 h-12 rounded-xl bg-green-500/20 text-green-400 hover:bg-green-500 hover:text-white transition-all shadow-[0_0_10px_rgba(34,197,94,0.2)] hover:shadow-[0_0_20px_rgba(34,197,94,0.4)] disabled:opacity-50 disabled:cursor-not-allowed"
                           >
-                            {getDownloadUrl.isPending && getDownloadUrl.variables?.data.formatId === format.formatId ? (
+                            {downloadingFormatId === format.formatId ? (
                               <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                             ) : (
                               <Download className="w-5 h-5" />
