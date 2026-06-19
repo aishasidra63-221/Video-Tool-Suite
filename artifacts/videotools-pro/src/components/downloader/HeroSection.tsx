@@ -101,15 +101,6 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
         <div className="absolute inset-0 bg-gradient-to-r from-primary/10 to-secondary/10 pointer-events-none" />
         <div className="relative flex flex-col md:flex-row items-center gap-3">
           <div className="relative w-full flex-1">
-            {platform && (() => {
-              const Icon = platform.IconComponent;
-              return (
-                <div className="absolute left-4 top-1/2 -translate-y-1/2 flex items-center justify-center">
-                  <Icon className="w-7 h-7" />
-                </div>
-              );
-            })()}
-
             <input
               ref={inputRef}
               type="text"
@@ -117,7 +108,7 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
               onChange={(e) => setUrl(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
               placeholder="Paste video URL here... (YouTube, TikTok, Instagram...)"
-              className={`w-full bg-black/50 border-2 rounded-2xl px-4 py-5 md:py-6 text-white placeholder:text-white/40 focus:outline-none transition-all text-lg shadow-inner ${platform ? 'pl-14' : 'pl-6'} ${url ? 'pr-14' : 'pr-28'} ${
+              className={`w-full bg-black/50 border-2 rounded-2xl px-4 py-5 md:py-6 text-white placeholder:text-white/40 focus:outline-none transition-all text-lg shadow-inner pl-6 ${url ? 'pr-14' : 'pr-28'} ${
                 showSuccess ? 'border-green-500/50 focus:border-green-500' :
                 showError   ? 'border-red-500/50 focus:border-red-500' :
                               'border-white/10 focus:border-primary/50'
