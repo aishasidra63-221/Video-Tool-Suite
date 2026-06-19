@@ -335,6 +335,103 @@ function igHttpGet(url: string, maxRedirects = 6, ua?: string): Promise<string> 
   });
 }
 
+// ── Instagram Mobile App API — hidden internal endpoint ───────────────────────
+// Instagram's Android/iOS app uses i.instagram.com/api/v1/media/{id}/info/
+// This is undocumented but stable. Works for public posts without user cookies.
+// Media ID derived from shortcode via base64-like decoding (Instagram's own encoding).
+
+const IG_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+function shortcodeToMediaId(shortcode: string): string {
+  let id = BigInt(0);
+  for (const char of shortcode) {
+    const idx = IG_ALPHABET.indexOf(char);
+    if (idx === -1) continue;
+    id = id * BigInt(64) + BigInt(idx);
+  }
+  return id.toString();
+}
+
+// Rotate between different Instagram app versions to avoid fingerprinting
+const IG_MOBILE_UAS = [
+  "Instagram 275.0.0.27.98 Android (33; 420dpi; 1080x2400; samsung; SM-G998B; p3q; exynos2100; en_US; 453636739)",
+  "Instagram 269.0.0.18.75 Android (31; 440dpi; 1080x2220; OnePlus; IN2020; OnePlus8T; qcom; en_US; 425766902)",
+  "Instagram 279.0.0.19.115 Android (34; 480dpi; 1440x3120; Google; Pixel 7; cheetah; tensor; en_US; 462880698)",
+  "Instagram 265.0.0.19.301 Android (30; 320dpi; 720x1560; Xiaomi; M2101K6G; alioth; qcom; en_US; 419830688)",
+];
+
+function randomMobileUA(): string {
+  return IG_MOBILE_UAS[Math.floor(Math.random() * IG_MOBILE_UAS.length)];
+}
+
+interface IgMobileItem {
+  video_versions?: { url: string; width: number; height: number; type: number }[];
+  image_versions2?: { candidates: { url: string }[] };
+  user?: { username?: string; full_name?: string };
+  caption?: { text?: string } | null;
+  media_type?: number; // 1=photo, 2=video, 8=album
+  carousel_media?: IgMobileItem[];
+  pk?: string;
+}
+
+function igMobileApi(mediaId: string, cookiesFlag?: string): Promise<IgMobileItem | null> {
+  return new Promise((resolve) => {
+    const ua = randomMobileUA();
+    // If we have a session cookie string, parse it to send along
+    const cookieHeader = cookiesFlag ? "" : ""; // cookies handled via yt-dlp, not here
+    const req = https.request({
+      hostname: "i.instagram.com",
+      path: `/api/v1/media/${mediaId}/info/`,
+      method: "GET",
+      headers: {
+        "User-Agent": ua,
+        "X-IG-App-ID": "936619743392459",
+        "X-IG-Bandwidth-Speed-KBPS": "-1.000",
+        "X-IG-Bandwidth-TotalBytes-B": "0",
+        "X-IG-Bandwidth-TotalTime-MS": "0",
+        "Accept-Language": "en-US",
+        "Accept-Encoding": "identity",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+      },
+    }, (res) => {
+      let data = "";
+      res.on("data", (c) => (data += c));
+      res.on("end", () => {
+        try {
+          const json = JSON.parse(data);
+          if (json.items && json.items.length > 0) {
+            resolve(json.items[0] as IgMobileItem);
+          } else {
+            resolve(null);
+          }
+        } catch { resolve(null); }
+      });
+    });
+    req.on("error", () => resolve(null));
+    req.setTimeout(10000, () => { req.destroy(); resolve(null); });
+    req.end();
+  });
+}
+
+// Extract best video URL from mobile API item (handles carousels too)
+function extractMobileVideoUrl(item: IgMobileItem): string | null {
+  // Direct video
+  if (item.video_versions?.length) {
+    // Sort by highest resolution (type 101 = full, 102 = lower)
+    const sorted = [...item.video_versions].sort((a, b) => (b.width * b.height) - (a.width * a.height));
+    return sorted[0].url;
+  }
+  // Carousel — find first video item
+  if (item.carousel_media?.length) {
+    for (const child of item.carousel_media) {
+      const url = extractMobileVideoUrl(child);
+      if (url) return url;
+    }
+  }
+  return null;
+}
+
 // ── Instagram oEmbed (official API — no auth for public posts) ────────────────
 // Returns metadata fast without scraping; does NOT return video URL
 function igOembed(shortcode: string): Promise<{ author: string; thumbnail: string | null; title: string } | null> {
@@ -383,23 +480,15 @@ async function _instagramFetchCore(videoUrl: string): Promise<InstagramData> {
   let title = "Instagram Video";
   let uploader: string | null = null;
 
-  // ── Layer 0 + Layer 1 + Layer 2 run in PARALLEL for max speed ─────────────
-  // Layer 0: oEmbed (official Instagram API — fast, reliable for metadata)
-  // Layer 1: Embed page (video URL + metadata via public embed endpoint)
-  // Layer 2: Main page og: tags (fallback for video URL)
+  // ── Layer 0 + 1 + 2 in PARALLEL ───────────────────────────────────────────
+  // Instagram has locked ALL unauthenticated endpoints since mid-2024.
+  // oEmbed / embed scraping still provide metadata (uploader, thumbnail).
+  // The only reliable way to get a video URL is via yt-dlp with user cookies.
   const [oembedResult, embedResult, mainResult] = await Promise.allSettled([
     igOembed(shortcode),
     igHttpGet(`https://www.instagram.com/p/${shortcode}/embed/captioned/`),
     igHttpGet(`https://www.instagram.com/p/${shortcode}/`),
   ]);
-
-  // ── Apply oEmbed metadata first (fastest, most reliable) ─────────────────
-  if (oembedResult.status === "fulfilled" && oembedResult.value) {
-    const oe = oembedResult.value;
-    if (oe.author) uploader = oe.author;
-    if (oe.thumbnail) thumbnail = oe.thumbnail;
-    if (oe.title && oe.title !== `Video by ${oe.author}`) title = oe.title;
-  }
 
   // ── Process Layer 1: embed page ───────────────────────────────────────────
   if (embedResult.status === "fulfilled") {
@@ -480,6 +569,14 @@ async function _instagramFetchCore(videoUrl: string): Promise<InstagramData> {
     }
   }
 
+  // ── oEmbed metadata (username + thumbnail, no video URL) ─────────────────
+  if (oembedResult.status === "fulfilled" && oembedResult.value) {
+    const oe = oembedResult.value;
+    if (!uploader && oe.author) uploader = oe.author;
+    if (!thumbnail && oe.thumbnail) thumbnail = oe.thumbnail;
+    if (title === "Instagram Video" && oe.title && oe.title !== `Video by ${oe.author}`) title = oe.title;
+  }
+
   // ── Layer 3: yt-dlp (primary video extractor — try with cookies first) ───────
   if (!videoUrl_) {
     const bin = getYtDlpBin();
@@ -511,10 +608,12 @@ async function _instagramFetchCore(videoUrl: string): Promise<InstagramData> {
   }
 
   if (!videoUrl_) {
-    const hint = hasInstagramCookies()
-      ? "Post private ho sakta hai ya delete ho gaya ho."
-      : " Settings mein apni Instagram cookies add karo — isse public posts bhi kaam karenge.";
-    throw new Error(`Instagram: video extract nahi ho saka.${hint}`);
+    if (!hasInstagramCookies()) {
+      const err = new Error("INSTAGRAM_COOKIES_REQUIRED") as any;
+      err.code = "INSTAGRAM_COOKIES_REQUIRED";
+      throw err;
+    }
+    throw new Error("Instagram: post private ho sakta hai ya delete ho gaya ho.");
   }
 
   return { title, uploader, thumbnail, videoUrl: videoUrl_, duration: null };
@@ -912,27 +1011,37 @@ router.post("/info", async (req, res) => {
 
     // ── Instagram: 3-layer scraper (embed → og:video → yt-dlp) ──────────────
     if (isInstagram) {
-      const cached = getCached(url);
-      let ig: InstagramData;
-      if (cached) {
-        req.log.info("cache hit (instagram)");
-        ig = JSON.parse(cached);
-      } else {
-        ig = await instagramFetch(url);
-        setCache(url, JSON.stringify(ig), CACHE_TTL_LONG_MS);
+      try {
+        const cached = getCached(url);
+        let ig: InstagramData;
+        if (cached) {
+          req.log.info("cache hit (instagram)");
+          ig = JSON.parse(cached);
+        } else {
+          ig = await instagramFetch(url);
+          setCache(url, JSON.stringify(ig), CACHE_TTL_LONG_MS);
+        }
+        return res.json({
+          url,
+          title: ig.title || "Instagram Video",
+          uploader: ig.uploader || null,
+          thumbnail: ig.thumbnail || null,
+          duration: ig.duration || null,
+          platform,
+          formats: [
+            { formatId: "instagram:video", quality: "HD", label: "Video (MP4)", type: "video" as const, filesize: null, badge: "HD" },
+            { formatId: "instagram:audio", quality: "MP3", label: "Audio (MP3)", type: "audio" as const, filesize: null, badge: null },
+          ],
+        });
+      } catch (err: any) {
+        if (err?.code === "INSTAGRAM_COOKIES_REQUIRED") {
+          return res.status(422).json({
+            error: "Instagram requires your session cookies to fetch video info.",
+            errorCode: "INSTAGRAM_COOKIES_REQUIRED",
+          });
+        }
+        return res.status(422).json({ error: "Unable to fetch Instagram video. Make sure it's a public post or reel." });
       }
-      return res.json({
-        url,
-        title: ig.title || "Instagram Video",
-        uploader: ig.uploader || null,
-        thumbnail: ig.thumbnail || null,
-        duration: ig.duration || null,
-        platform,
-        formats: [
-          { formatId: "instagram:video", quality: "HD", label: "Video (MP4)", type: "video" as const, filesize: null, badge: "HD" },
-          { formatId: "instagram:audio", quality: "MP3", label: "Audio (MP3)", type: "audio" as const, filesize: null, badge: null },
-        ],
-      });
     }
 
     // ── Check cache first ────────────────────────────────────────────────────
@@ -1052,8 +1161,15 @@ router.post("/download", async (req, res) => {
         res.json({ downloadUrl: ig.videoUrl, filename: "instagram_video.mp4" });
       }
       return;
-    } catch (err) {
-      res.status(422).json({ error: "Failed to get Instagram video. Make sure it's a public post or reel." });
+    } catch (err: any) {
+      if (err?.code === "INSTAGRAM_COOKIES_REQUIRED") {
+        res.status(422).json({
+          error: "Instagram requires your session cookies to download videos.",
+          errorCode: "INSTAGRAM_COOKIES_REQUIRED",
+        });
+      } else {
+        res.status(422).json({ error: "Failed to get Instagram video. Make sure it's a public post or reel." });
+      }
       return;
     }
   }

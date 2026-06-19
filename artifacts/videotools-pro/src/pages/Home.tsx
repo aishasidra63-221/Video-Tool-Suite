@@ -11,11 +11,13 @@ export default function Home() {
   const getVideoInfo = useGetVideoInfo();
   const [videoData, setVideoData] = useState<VideoInfo | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
   const [lastUrl, setLastUrl] = useState<string>("");
 
   const fetchInfo = (url: string) => {
     setVideoData(null);
     setErrorMsg(null);
+    setErrorCode(null);
     setLastUrl(url);
 
     getVideoInfo.mutate(
@@ -25,6 +27,7 @@ export default function Home() {
           setVideoData(data);
         },
         onError: (err: any) => {
+          setErrorCode(err?.response?.data?.errorCode || null);
           setErrorMsg(
             err?.response?.data?.error ||
               "Failed to fetch video information. Please check the URL and try again.",
@@ -37,6 +40,7 @@ export default function Home() {
   const handleReset = () => {
     setVideoData(null);
     setErrorMsg(null);
+    setErrorCode(null);
     setLastUrl("");
   };
 
@@ -48,6 +52,7 @@ export default function Home() {
         <ResultSection
           info={videoData}
           error={errorMsg}
+          errorCode={errorCode}
           isLoading={getVideoInfo.isPending}
           onReset={handleReset}
           onRetry={lastUrl ? () => fetchInfo(lastUrl) : undefined}

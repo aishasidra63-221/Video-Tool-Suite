@@ -72,10 +72,13 @@ Stream the merged MKV file to client with Content-Length, delete on close.
 - Formats: `format_id="hd"/"sd"` with `height=None`, `vcodec=None`
 - Height-based detection gives 0 results; match by format_id string instead
 
-## Instagram
-- Combined format has `vcodec=null` (JSON null), not string "none"
-- Include formats with `height > 0` regardless of vcodec string
-- `--get-url` returns direct CDN mp4 — safe to return to browser
+## Instagram (CONFIRMED mid-2024 complete lockdown)
+- **ALL unauthenticated access blocked**: oEmbed, HTML scraping, `__a=1`, mobile API (`i.instagram.com/api/v1/media/{id}/info/`) → all return `login_required` or empty.
+- **Mobile API approach is dead** — do NOT attempt `i.instagram.com/api/v1/media/{id}/info/` — returns `login_required` even with spoofed Instagram Android UA.
+- **Only working approach**: yt-dlp with user session cookies (`--cookies bin/instagram-cookies.txt`).
+- Error code `INSTAGRAM_COOKIES_REQUIRED` thrown when no cookies configured. Frontend shows special Instagram setup UI with 4-step guide + "Go to Settings" button.
+- oEmbed + HTML layers still run for metadata (thumbnail, username) — no video URL without cookies.
+- Cookie helpers: `getInstagramCookiesFlag()`, `hasInstagramCookies()`, `saveInstagramCookies()`, `deleteInstagramCookies()` in `lib/ytdlp-manager.ts`.
 
 ## Download routing
 - Direct CDN (non-HLS) → return URL directly to browser
