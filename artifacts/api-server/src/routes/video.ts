@@ -1111,16 +1111,19 @@ router.post("/info", async (req, res) => {
 
     // YouTube: return virtual quality tiers — yt-dlp format list is unreliable
     // without PO token (mid-2026). Actual availability resolved at download time.
+    // Estimated filesize = typical_bitrate_bps * duration / 8  (bytes)
+    const dur = info.duration ?? 0;
+    const estSize = (kbps: number) => dur > 0 ? Math.round(kbps * 1000 / 8 * dur) : null;
     const formats = isYouTube
       ? [
-          { formatId: "yt_2160", quality: "4K",    label: "4K Ultra HD",     type: "video" as const, filesize: null, badge: "4K" },
-          { formatId: "yt_1440", quality: "1440p",  label: "1440p QHD",       type: "video" as const, filesize: null, badge: "QHD" },
-          { formatId: "yt_1080", quality: "1080p",  label: "1080p Full HD",   type: "video" as const, filesize: null, badge: "Full HD" },
-          { formatId: "yt_720",  quality: "720p",   label: "720p HD",         type: "video" as const, filesize: null, badge: "HD" },
-          { formatId: "yt_480",  quality: "480p",   label: "480p SD",         type: "video" as const, filesize: null, badge: null },
-          { formatId: "bestaudio:audio:192", quality: "192kbps", label: "MP3 ~192kbps • High Quality", type: "audio" as const, filesize: null, badge: "Best Quality" },
-          { formatId: "bestaudio:audio:128", quality: "128kbps", label: "MP3 ~128kbps • Standard",     type: "audio" as const, filesize: null, badge: null },
-          { formatId: "bestaudio:audio:64",  quality: "64kbps",  label: "MP3 ~64kbps • Small Size",    type: "audio" as const, filesize: null, badge: null },
+          { formatId: "yt_2160", quality: "4K",    label: "4K Ultra HD",     type: "video" as const, filesize: estSize(15000), badge: "4K" },
+          { formatId: "yt_1440", quality: "1440p",  label: "1440p QHD",       type: "video" as const, filesize: estSize(8000),  badge: "QHD" },
+          { formatId: "yt_1080", quality: "1080p",  label: "1080p Full HD",   type: "video" as const, filesize: estSize(4000),  badge: "Full HD" },
+          { formatId: "yt_720",  quality: "720p",   label: "720p HD",         type: "video" as const, filesize: estSize(2500),  badge: "HD" },
+          { formatId: "yt_480",  quality: "480p",   label: "480p SD",         type: "video" as const, filesize: estSize(1200),  badge: null },
+          { formatId: "bestaudio:audio:192", quality: "192kbps", label: "MP3 ~192kbps • High Quality", type: "audio" as const, filesize: estSize(192), badge: "Best Quality" },
+          { formatId: "bestaudio:audio:128", quality: "128kbps", label: "MP3 ~128kbps • Standard",     type: "audio" as const, filesize: estSize(128), badge: null },
+          { formatId: "bestaudio:audio:64",  quality: "64kbps",  label: "MP3 ~64kbps • Small Size",    type: "audio" as const, filesize: estSize(64),  badge: null },
         ]
       : buildFormats(info.formats);
 
@@ -1547,6 +1550,16 @@ router.get("/stream", async (req, res) => {
       url,
     ];
 
+    // yt-dlp may output .mkv, .mp4, .webm depending on whether merge happened
+    // Check all common extensions to find the actual output file
+    const findOutputFile = (): string | null => {
+      for (const ext of [".mkv", ".mp4", ".webm", ".m4v", ".avi"]) {
+        const candidate = `${tmpBase}${ext}`;
+        if (existsSync(candidate)) return candidate;
+      }
+      return null;
+    };
+
     const runDownload = (args: string[], label: string): Promise<string | null> =>
       new Promise((resolve) => {
         const proc = spawn(getYtDlpBin(), args);
@@ -1554,8 +1567,8 @@ router.get("/stream", async (req, res) => {
           req.log.info({ stderr: d.toString().slice(0, 200) }, label)
         );
         proc.on("close", (code) => {
-          const outFile = `${tmpBase}.mkv`;
-          resolve(code === 0 && existsSync(outFile) ? outFile : null);
+          if (code !== 0) { resolve(null); return; }
+          resolve(findOutputFile());
         });
         proc.on("error", () => resolve(null));
         req.on("close", () => proc.kill());
@@ -1578,12 +1591,13 @@ router.get("/stream", async (req, res) => {
       if (tmpFile) {
         ytStreamSemaphore.release();
         req.removeAllListeners("close"); // prevent double release
-        req.log.info({ client }, "YouTube download succeeded");
+        req.log.info({ client, tmpFile }, "YouTube download succeeded");
         break;
       }
       req.log.warn({ client }, "Download client failed, trying next");
     }
-    streamTempFile(tmpFile ?? `${tmpBase}.mkv`);
+    // Use found file — if still null, streamTempFile will return 500 gracefully
+    streamTempFile(tmpFile ?? findOutputFile() ?? `${tmpBase}.mkv`);
     return;
   }
 

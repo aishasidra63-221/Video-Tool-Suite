@@ -33,6 +33,12 @@ description: Per-platform yt-dlp behavior oddities, YouTube client rotation stra
 
 **Download routing:** `yt_XXXX` format IDs always go to `/stream` endpoint (never direct CDN) because HD always needs video+audio merge.
 
+**Critical bug (fixed):** yt-dlp with `--merge-output-format mkv` only remuxes to .mkv when merging two streams. Single-stream fallback (format 18, 360p) stays as .mp4. Always use `findOutputFile()` checking [.mkv, .mp4, .webm, .m4v, .avi] instead of hardcoding `.mkv` extension in `runDownload`.
+
+**Estimated filesize:** YouTube virtual formats calculate `estSize(kbps) = kbps * 1000 / 8 * duration_seconds`. Typical: 4K=15000kbps, 1440p=8000, 1080p=4000, 720p=2500, 480p=1200.
+
+**Mobile download:** Stream URLs must use `window.open(url, "_blank")` not `a.click()`. Mobile browsers block programmatic clicks for long-running responses.
+
 ## YouTube audio stream
 
 Audio works via client rotation → `18/bestaudio` format → get direct CDN URL → ffmpeg `-vn` extract MP3.
