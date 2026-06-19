@@ -367,6 +367,22 @@ function recordFailure(client: YtClient) {
   h.lastFailure = Date.now();
 }
 
+const PERMANENT_CLIENT_ERRORS = [
+  "sign in to confirm", "sign in to watch", "log in",
+  "this video is private", "video is private",
+  "this video has been removed", "video has been removed",
+  "copyright", "not available on this app",
+  "no longer supported", "unsupported url",
+];
+
+function isPermanentClientError(msg: string): boolean {
+  return PERMANENT_CLIENT_ERRORS.some((s) => msg.toLowerCase().includes(s.toLowerCase()));
+}
+
+/**
+ * Sequential client rotation — tries clients one by one in health-ranked order.
+ * Used for streaming/download where parallel attempts waste bandwidth.
+ */
 export async function withYtClientRotation<T>(
   fn: (clientFlag: string) => Promise<T>,
   options: { requireHD?: boolean } = {}
@@ -386,22 +402,68 @@ export async function withYtClientRotation<T>(
       recordFailure(client);
       errors.push(`[${client}] ${msg}`);
       logger.warn({ client, err: msg }, "YouTube client failed, trying next");
-
-      // Only bail early on errors that NO client can fix (video is gone/private/geo-blocked).
-      // Do NOT include "not available" broadly — "Requested format is not available" is
-      // client-specific and another client (android_embedded, android_testsuite) may succeed.
-      const isPermanent = [
-        "sign in to confirm", "sign in to watch", "log in",
-        "this video is private", "video is private",
-        "this video has been removed", "video has been removed",
-        "copyright", "not available on this app",
-        "no longer supported", "unsupported url",
-      ].some((s) => msg.toLowerCase().includes(s.toLowerCase()));
-      if (isPermanent) throw err;
+      if (isPermanentClientError(msg)) throw err;
     }
   }
 
   throw new Error(`All YouTube clients failed:\n${errors.join("\n")}`);
+}
+
+/**
+ * Parallel client rotation — races top 2 clients simultaneously, uses whichever
+ * responds first. Falls back to sequential for remaining clients if both fail.
+ * Use for /info calls where latency matters more than resource usage.
+ */
+export async function withYtClientRotationFast<T>(
+  fn: (clientFlag: string) => Promise<T>
+): Promise<{ result: T; client: YtClient }> {
+  const ordered = getClientOrder();
+
+  // Race the top 2 healthy clients in parallel
+  const top = ordered.slice(0, 2);
+  const rest = ordered.slice(2);
+
+  interface Success { result: T; client: YtClient; }
+
+  const raceTop = Promise.any(
+    top.map(async (client): Promise<Success> => {
+      const flag = `--extractor-args "youtube:player_client=${client}"`;
+      try {
+        const result = await fn(flag);
+        recordSuccess(client);
+        logger.info({ client }, "YouTube fast-race client succeeded");
+        return { result, client };
+      } catch (err) {
+        const msg = ((err as Error & { stderr?: string }).stderr || (err as Error).message || "").slice(0, 200);
+        recordFailure(client);
+        logger.warn({ client, err: msg }, "YouTube fast-race client failed");
+        if (isPermanentClientError(msg)) throw err; // bubble up permanent errors
+        throw err;
+      }
+    })
+  );
+
+  try {
+    return await raceTop;
+  } catch {
+    // Both top clients failed — try remaining sequentially
+    const errors: string[] = [];
+    for (const client of rest) {
+      const flag = `--extractor-args "youtube:player_client=${client}"`;
+      try {
+        const result = await fn(flag);
+        recordSuccess(client);
+        logger.info({ client }, "YouTube fallback client succeeded");
+        return { result, client };
+      } catch (err) {
+        const msg = ((err as Error & { stderr?: string }).stderr || (err as Error).message || "").slice(0, 200);
+        recordFailure(client);
+        errors.push(`[${client}] ${msg}`);
+        if (isPermanentClientError(msg)) throw err;
+      }
+    }
+    throw new Error(`All YouTube clients failed:\n${errors.join("\n")}`);
+  }
 }
 
 export function getClientHealthStatus() {

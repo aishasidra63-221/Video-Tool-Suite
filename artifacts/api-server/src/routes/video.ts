@@ -4,7 +4,7 @@ import { promisify } from "util";
 import { existsSync, statSync, createReadStream, unlink } from "fs";
 import https from "https";
 import { GetVideoInfoBody, GetDownloadUrlBody } from "@workspace/api-zod";
-import { getYtDlpBin, withYtClientRotation, hasCookies, getCookiesFlag, hasInstagramCookies, getInstagramCookiesFlag, getXffFlag, getBrowserHeaderFlags } from "../lib/ytdlp-manager";
+import { getYtDlpBin, withYtClientRotation, withYtClientRotationFast, hasCookies, getCookiesFlag, hasInstagramCookies, getInstagramCookiesFlag, getXffFlag, getBrowserHeaderFlags } from "../lib/ytdlp-manager";
 
 const execAsync = promisify(exec);
 const router = Router();
@@ -642,7 +642,7 @@ async function _instagramFetchCore(videoUrl: string): Promise<InstagramData> {
 
     for (const cf of attempts) {
       try {
-        const cmd = `"${bin}" --dump-json --no-playlist --no-warnings --socket-timeout 15 ${cf} "${videoUrl}"`;
+        const cmd = `"${bin}" --dump-json --no-playlist --no-warnings --socket-timeout 10 ${cf} "${videoUrl}"`;
         const { stdout } = await execAsync(cmd, { timeout: 20000 });
         const info = JSON.parse(stdout.trim().split("\n")[0]);
         if (info.url) {
@@ -700,7 +700,7 @@ function detectPlatform(url: string): string {
 }
 
 /** Base flags always applied to every yt-dlp call */
-const BASE_FLAGS = "--no-playlist --no-warnings --socket-timeout 20 --no-check-formats";
+const BASE_FLAGS = "--no-playlist --no-warnings --socket-timeout 10 --no-check-formats";
 
 // ── Random jitter delay — makes requests look less bot-like ──────────────────
 // Spreads traffic so YouTube/Instagram don't see perfectly simultaneous bursts
@@ -736,7 +736,7 @@ const PERMANENT_ERRORS = ["Sign in", "log in", "login", "Private", "not availabl
 function isTransientError(msg: string): boolean {
   return !PERMANENT_ERRORS.some((s) => msg.toLowerCase().includes(s.toLowerCase()));
 }
-async function withRetry<T>(fn: () => Promise<T>, retries = 2, delayMs = 1500): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, retries = 1, delayMs = 500): Promise<T> {
   let lastErr: unknown;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -1124,10 +1124,9 @@ router.post("/info", async (req, res) => {
       } else {
         const fetchPromise = ytInfoSemaphore.acquire().then(async () => {
           try {
-            await jitter(150, 700); // random delay — looks less like a bot
             let out: string;
             try {
-              const { result } = await withYtClientRotation((flag) => runInfo(flag));
+              const { result } = await withYtClientRotationFast((flag) => runInfo(flag));
               out = result;
             } catch (firstErr) {
               const errMsg = ((firstErr as Error & { stderr?: string }).stderr || (firstErr as Error).message || "");
@@ -1135,7 +1134,7 @@ router.post("/info", async (req, res) => {
               if (isBotBlock && hasCookies()) {
                 req.log.info("Bot block detected, retrying with cookies");
                 const cookiesFlag = getCookiesFlag();
-                const { result } = await withYtClientRotation((flag) => runInfo(flag, cookiesFlag));
+                const { result } = await withYtClientRotationFast((flag) => runInfo(flag, cookiesFlag));
                 out = result;
               } else {
                 throw firstErr;
@@ -1364,7 +1363,7 @@ router.post("/download", async (req, res) => {
   const tryGetUrl = async (clientFlag: string) => {
     const bin = getYtDlpBin();
     const xffFlag = isYtDownload ? getXffFlag() : "";
-    const cmd = `"${bin}" -f "${actualFormatId}" --get-url --no-warnings --socket-timeout 20 ${clientFlag} ${xffFlag} "${url}"`;
+    const cmd = `"${bin}" -f "${actualFormatId}" --get-url --no-warnings --socket-timeout 10 ${clientFlag} ${xffFlag} "${url}"`;
     const { stdout } = await execAsync(cmd, { timeout: 35000 });
     const urls = stdout.trim().split("\n").filter(Boolean);
     if (!urls.length) throw new Error("No URLs");
@@ -1467,7 +1466,7 @@ router.get("/stream", async (req, res) => {
         const bin = getYtDlpBin();
         const { result: f18out } = await withYtClientRotation(async (flag) => {
           const { stdout } = await execAsync(
-            `"${bin}" -f "18/bestaudio" --get-url --no-warnings --socket-timeout 20 ${flag} ${getXffFlag()} "${url}"`,
+            `"${bin}" -f "18/bestaudio" --get-url --no-warnings --socket-timeout 10 ${flag} ${getXffFlag()} "${url}"`,
             { timeout: 25000 }
           );
           if (!stdout.trim()) throw new Error("empty");
@@ -1499,7 +1498,7 @@ router.get("/stream", async (req, res) => {
     } else {
       // Non-YouTube: try direct CDN URL + ffmpeg (faster), fallback to yt-dlp pipe
       try {
-        const cmd = `"${getYtDlpBin()}" -f "${audioFmt}" --get-url --no-warnings --socket-timeout 20 --geo-bypass --geo-bypass-country US "${url}"`;
+        const cmd = `"${getYtDlpBin()}" -f "${audioFmt}" --get-url --no-warnings --socket-timeout 10 --geo-bypass --geo-bypass-country US "${url}"`;
         const { stdout } = await execAsync(cmd, { timeout: 35000 });
         const audioUrl = stdout.trim().split("\n")[0];
         // Reject HLS manifests (ffmpeg can't handle them without special auth)
@@ -1587,8 +1586,6 @@ router.get("/stream", async (req, res) => {
     const releaseSemaphore = () => { ytStreamSemaphore.release(); };
     req.on("close", releaseSemaphore);
 
-    await jitter(100, 400);
-
     // ── Step 1: Get CDN URLs (cache first, then fetch) ───────────────────
     // Cache key = video URL + format selector — same video+quality = same URLs
     const cdnCacheKey = `${url}::${resolvedFormat}`;
@@ -1604,7 +1601,7 @@ router.get("/stream", async (req, res) => {
           for (const client of getUrlClients) {
             try {
               const { stdout: urlOut } = await execAsync(
-                `"${getYtDlpBin()}" -f "${resolvedFormat}" --get-url --no-warnings --socket-timeout 20 --no-check-formats --extractor-args "youtube:player_client=${client}" ${getXffFlag()} "${url}"`,
+                `"${getYtDlpBin()}" -f "${resolvedFormat}" --get-url --no-warnings --socket-timeout 10 --no-check-formats --extractor-args "youtube:player_client=${client}" ${getXffFlag()} "${url}"`,
                 { timeout: 30000 }
               );
               const urls = urlOut.trim().split("\n").filter(Boolean);
@@ -1685,7 +1682,7 @@ router.get("/stream", async (req, res) => {
   try {
     const fmtSelector = `${formatId}+bestaudio/${formatId}/best`;
     const { stdout } = await execAsync(
-      `"${getYtDlpBin()}" -f "${fmtSelector}" --get-url --no-warnings --socket-timeout 20 --geo-bypass --geo-bypass-country US "${url}"`,
+      `"${getYtDlpBin()}" -f "${fmtSelector}" --get-url --no-warnings --socket-timeout 10 --geo-bypass --geo-bypass-country US "${url}"`,
       { timeout: 35000 }
     );
     const cdnUrls = stdout.trim().split("\n").filter(Boolean);
