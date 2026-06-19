@@ -12,7 +12,7 @@ const router = Router();
 const PLATFORM_PATTERNS: Record<string, RegExp[]> = {
   YouTube: [/youtube\.com\/watch/, /youtu\.be\//, /youtube\.com\/shorts\//],
   TikTok: [/tiktok\.com\//],
-  Snapchat: [/snapchat\.com\/spotlight\//, /snapchat\.com\/add\//, /snapchat\.com\/p\//],
+  Snapchat: [/snapchat\.com/],
 };
 
 // ── TikTok Multi-API Fallback System ─────────────────────────────────────────
@@ -98,30 +98,29 @@ interface SnapchatData {
   duration: number | null;
 }
 
-function snapHttpGet(url: string): Promise<string> {
+function snapHttpGet(url: string, maxRedirects = 8): Promise<string> {
   return new Promise((resolve, reject) => {
-    const parsed = new URL(url);
-    const options = {
+    if (maxRedirects <= 0) return reject(new Error("Snapchat: too many redirects"));
+    let parsed: URL;
+    try { parsed = new URL(url); } catch { return reject(new Error("Snapchat: invalid URL")); }
+    const req = https.request({
       hostname: parsed.hostname,
       path: parsed.pathname + parsed.search,
       method: "GET",
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "identity",
         "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Upgrade-Insecure-Requests": "1",
       },
-    };
-    const req = https.request(options, (res) => {
-      // Follow redirect
-      if ((res.statusCode === 301 || res.statusCode === 302) && res.headers.location) {
-        snapHttpGet(res.headers.location).then(resolve).catch(reject);
+    }, (res) => {
+      // Handle all redirect types including 308
+      if (res.statusCode && [301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+        const loc = res.headers.location.startsWith("http")
+          ? res.headers.location
+          : "https://www.snapchat.com" + res.headers.location;
+        snapHttpGet(loc, maxRedirects - 1).then(resolve).catch(reject);
         return;
       }
       let data = "";
@@ -129,19 +128,20 @@ function snapHttpGet(url: string): Promise<string> {
       res.on("end", () => resolve(data));
     });
     req.on("error", reject);
-    req.setTimeout(20000, () => { req.destroy(); reject(new Error("Snapchat fetch timeout")); });
+    req.setTimeout(25000, () => { req.destroy(); reject(new Error("Snapchat fetch timeout")); });
     req.end();
   });
 }
 
-// Recursively find all string values matching a predicate in a nested object
-function deepFindStrings(obj: unknown, predicate: (s: string) => boolean, results: string[] = []): string[] {
+// Recursively find all string values matching a predicate
+function deepFindStrings(obj: unknown, predicate: (s: string) => boolean, results: string[] = [], depth = 0): string[] {
+  if (depth > 25) return results;
   if (typeof obj === "string") {
     if (predicate(obj)) results.push(obj);
   } else if (Array.isArray(obj)) {
-    for (const item of obj) deepFindStrings(item, predicate, results);
+    for (const item of obj) deepFindStrings(item, predicate, results, depth + 1);
   } else if (obj && typeof obj === "object") {
-    for (const val of Object.values(obj)) deepFindStrings(val, predicate, results);
+    for (const val of Object.values(obj)) deepFindStrings(val, predicate, results, depth + 1);
   }
   return results;
 }
@@ -149,39 +149,39 @@ function deepFindStrings(obj: unknown, predicate: (s: string) => boolean, result
 async function snapchatFetch(videoUrl: string): Promise<SnapchatData> {
   const html = await snapHttpGet(videoUrl);
 
-  // Extract __NEXT_DATA__ JSON from the page
+  // Extract __NEXT_DATA__ JSON
   const match = html.match(/<script[^>]+id="__NEXT_DATA__"[^>]*>([^<]+)<\/script>/);
-  if (!match) throw new Error("Snapchat: __NEXT_DATA__ not found");
+  if (!match) throw new Error("Snapchat: page data not found — make sure it is a public Spotlight URL");
 
   let nextData: unknown;
-  try {
-    nextData = JSON.parse(match[1]);
-  } catch {
-    throw new Error("Snapchat: failed to parse __NEXT_DATA__");
+  try { nextData = JSON.parse(match[1]); }
+  catch { throw new Error("Snapchat: failed to parse page data"); }
+
+  // ── Snapchat CDN facts (confirmed by testing) ──────────────────────────────
+  // Video streams:    bolt-gcdn.sc-cdn.net  with  .27.  in path
+  // Thumbnails:       bolt-gcdn.sc-cdn.net  with  .256. in path
+  //                   cf-st.sc-cdn.net      (static images)
+  // ────────────────────────────────────────────────────────────────────────────
+  const boltUrls = deepFindStrings(nextData, (s) => s.includes("bolt-gcdn.sc-cdn.net"));
+  const videoUrls = boltUrls.filter((u) => u.includes(".27."));
+  const thumbBoltUrls = boltUrls.filter((u) => u.includes(".256."));
+  const cfstUrls = deepFindStrings(nextData, (s) => s.includes("cf-st.sc-cdn.net"));
+
+  if (!videoUrls.length) {
+    throw new Error("Snapchat: no video found — the video may be private, deleted, or not a Spotlight video");
   }
 
-  // Find all mp4 video URLs
-  const mp4Urls = deepFindStrings(nextData, (s) =>
-    (s.includes(".mp4") || s.includes("video/mp4") || s.includes("snapchat.com/video")) &&
-    (s.startsWith("http://") || s.startsWith("https://"))
-  );
-
-  if (!mp4Urls.length) throw new Error("Snapchat: no video URL found in page");
-
-  // Find thumbnail (jpeg/webp image URL)
-  const thumbUrls = deepFindStrings(nextData, (s) =>
-    (s.includes(".jpg") || s.includes(".jpeg") || s.includes(".webp") || s.includes("thumbnail")) &&
-    s.startsWith("https://") && !s.includes(".mp4")
-  );
-
-  // Find title from og:title or page props
+  // Title from og:title meta tag
   const titleMatch = html.match(/<meta[^>]+property="og:title"[^>]+content="([^"]+)"/);
-  const title = titleMatch ? titleMatch[1].replace(" | Snapchat", "").trim() : "Snapchat Video";
+  const title = titleMatch ? titleMatch[1].replace(/\s*\|\s*Snapchat\s*$/, "").trim() : "Snapchat Video";
+
+  // Thumbnail: prefer bolt .256. urls, fallback to cf-st
+  const thumbnail = thumbBoltUrls[0] || cfstUrls[0] || null;
 
   return {
     title,
-    thumbnail: thumbUrls[0] || null,
-    videoUrl: mp4Urls[0],
+    thumbnail,
+    videoUrl: videoUrls[0],
     duration: null,
   };
 }
