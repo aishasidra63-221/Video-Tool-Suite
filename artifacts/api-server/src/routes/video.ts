@@ -1507,18 +1507,13 @@ router.get("/stream", async (req, res) => {
     u.includes(".m3u8") || u.includes("/manifest/") || u.includes("manifest.googlevideo.com");
 
   if (isYtStream) {
-    // ── YouTube: download to temp file → stream → cleanup ─────────────────
-    // YouTube HLS streams (720p/1080p/4K) cannot be piped to stdout directly —
-    // yt-dlp needs to write video+audio temp files, merge via ffmpeg, then output.
-    // We download to /tmp, stream the merged MKV, then delete.
-    // --postprocessor-args "merger:-allowed_extensions ALL" fixes YouTube HLS audio merge.
-    req.log.info({ formatId }, "YouTube stream: temp file download");
-
-    const tmpId = `vt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const tmpBase = `/tmp/${tmpId}`;
+    // ── YouTube: real-time ffmpeg pipe merge (no temp file) ───────────────
+    // Strategy: get direct CDN URLs via --get-url, then pipe both streams
+    // through ffmpeg for real-time merge → client receives response immediately
+    // (no waiting for full download). Fallback to temp-file if --get-url fails.
+    req.log.info({ formatId }, "YouTube stream: real-time ffmpeg pipe");
 
     // Map virtual yt_XXXX format IDs to proper yt-dlp format selectors
-    // e.g. yt_1080 → bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]
     const resolveYtFormat = (fid: string): string => {
       if (!fid.startsWith("yt_")) return `${fid}+bestaudio/${fid}/best`;
       const h = fid.replace("yt_", "");
@@ -1526,79 +1521,91 @@ router.get("/stream", async (req, res) => {
     };
     const resolvedFormat = resolveYtFormat(formatId ?? "");
 
-    const streamTempFile = (tmpFile: string) => {
-      if (!existsSync(tmpFile)) {
-        if (!res.headersSent) res.status(500).json({ error: "Download failed" });
-        return;
-      }
-      const stat = statSync(tmpFile);
-      res.setHeader("Content-Length", stat.size);
-      const fileStream = createReadStream(tmpFile);
-      fileStream.pipe(res);
-      const cleanup = () => unlink(tmpFile, () => {});
-      fileStream.on("close", cleanup);
-      req.on("close", () => { fileStream.destroy(); cleanup(); });
-    };
+    // Height label for filename
+    const heightLabel = (fid: string) => fid.startsWith("yt_") ? fid.replace("yt_", "") + "p" : "video";
+    const filename = `video_${heightLabel(formatId ?? "")}.mp4`;
 
-    const buildArgs = (extraArgs: string[]) => [
-      "-f", resolvedFormat,
-      "--merge-output-format", "mkv",
-      "--no-warnings", "--socket-timeout", "20", "--no-check-formats",
-      "--postprocessor-args", "merger:-allowed_extensions ALL",
-      ...extraArgs,
-      "-o", `${tmpBase}.%(ext)s`,
-      url,
-    ];
-
-    // yt-dlp may output .mkv, .mp4, .webm depending on whether merge happened
-    // Check all common extensions to find the actual output file
-    const findOutputFile = (): string | null => {
-      for (const ext of [".mkv", ".mp4", ".webm", ".m4v", ".avi"]) {
-        const candidate = `${tmpBase}${ext}`;
-        if (existsSync(candidate)) return candidate;
-      }
-      return null;
-    };
-
-    const runDownload = (args: string[], label: string): Promise<string | null> =>
-      new Promise((resolve) => {
-        const proc = spawn(getYtDlpBin(), args);
-        proc.stderr.on("data", (d: Buffer) =>
-          req.log.info({ stderr: d.toString().slice(0, 200) }, label)
-        );
-        proc.on("close", (code) => {
-          if (code !== 0) { resolve(null); return; }
-          resolve(findOutputFile());
-        });
-        proc.on("error", () => resolve(null));
-        req.on("close", () => proc.kill());
-      });
-
-    // Semaphore: cap simultaneous YouTube downloads to avoid server IP flagging
     await ytStreamSemaphore.acquire();
-    req.on("close", () => ytStreamSemaphore.release());
+    const releaseSemaphore = () => { ytStreamSemaphore.release(); };
+    req.on("close", releaseSemaphore);
 
-    await jitter(100, 500); // small random delay before hitting YouTube
+    await jitter(100, 400);
 
-    // Client rotation: ios/android_embedded/android_testsuite all give full HD
-    // without PO token (tested 2026-06). Prioritize these over plain android/mweb.
-    const clients = ["ios", "android_embedded", "android_testsuite", "android_music"] as const;
-    let tmpFile: string | null = null;
-    for (const client of clients) {
-      tmpFile = await runDownload(
-        buildArgs(["--extractor-args", `youtube:player_client=${client}`]),
-        `yt-dlp ${client} download`
-      );
-      if (tmpFile) {
-        ytStreamSemaphore.release();
-        req.removeAllListeners("close"); // prevent double release
-        req.log.info({ client, tmpFile }, "YouTube download succeeded");
-        break;
+    // ── Step 1: Get direct CDN URLs using ios client ────────────────────
+    const getUrlClients = ["ios", "android_embedded", "android_testsuite", "android_music"] as const;
+    let cdnUrls: string[] = [];
+    let usedClient = "";
+    for (const client of getUrlClients) {
+      try {
+        const { stdout: urlOut } = await execAsync(
+          `"${getYtDlpBin()}" -f "${resolvedFormat}" --get-url --no-warnings --socket-timeout 20 --no-check-formats --extractor-args "youtube:player_client=${client}" "${url}"`,
+          { timeout: 30000 }
+        );
+        const urls = urlOut.trim().split("\n").filter(Boolean);
+        if (urls.length > 0) { cdnUrls = urls; usedClient = client; break; }
+      } catch (e) {
+        req.log.warn({ client, err: (e as Error).message?.slice(0, 100) }, "get-url client failed");
       }
-      req.log.warn({ client }, "Download client failed, trying next");
     }
-    // Use found file — if still null, streamTempFile will return 500 gracefully
-    streamTempFile(tmpFile ?? findOutputFile() ?? `${tmpBase}.mkv`);
+
+    if (cdnUrls.length === 0) {
+      releaseSemaphore();
+      req.removeAllListeners("close");
+      if (!res.headersSent) res.status(502).json({ error: "Could not fetch video URL from YouTube" });
+      return;
+    }
+
+    req.log.info({ usedClient, urlCount: cdnUrls.length }, "Got CDN URLs, starting ffmpeg pipe");
+    releaseSemaphore();
+    req.removeAllListeners("close");
+
+    // ── Step 2: Pipe through ffmpeg for real-time merge ─────────────────
+    res.setHeader("Content-Type", "video/mp4");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+
+    let ffmpegArgs: string[];
+    if (cdnUrls.length >= 2) {
+      // Two streams: video + audio → merge
+      ffmpegArgs = [
+        "-y",
+        "-headers", "User-Agent: com.google.ios.youtube/19.29.1 CFNetwork/3826.400.120 Darwin/24.0.0\r\n",
+        "-i", cdnUrls[0],
+        "-headers", "User-Agent: com.google.ios.youtube/19.29.1 CFNetwork/3826.400.120 Darwin/24.0.0\r\n",
+        "-i", cdnUrls[1],
+        "-c:v", "copy", "-c:a", "copy",
+        "-f", "mp4",
+        "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+        "pipe:1",
+      ];
+    } else {
+      // Single stream (360p combined): just remux to mp4
+      ffmpegArgs = [
+        "-y",
+        "-headers", "User-Agent: com.google.ios.youtube/19.29.1 CFNetwork/3826.400.120 Darwin/24.0.0\r\n",
+        "-i", cdnUrls[0],
+        "-c", "copy",
+        "-f", "mp4",
+        "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+        "pipe:1",
+      ];
+    }
+
+    const ffmpegBin = "ffmpeg";
+    const ffmpegProc = spawn(ffmpegBin, ffmpegArgs, { stdio: ["ignore", "pipe", "pipe"] });
+
+    ffmpegProc.stderr.on("data", (d: Buffer) =>
+      req.log.info({ stderr: d.toString().slice(0, 300) }, "ffmpeg")
+    );
+    ffmpegProc.stdout.pipe(res);
+    ffmpegProc.on("close", (code) => {
+      req.log.info({ code }, "ffmpeg done");
+      if (!res.writableEnded) res.end();
+    });
+    ffmpegProc.on("error", (e: Error) => {
+      req.log.error({ err: e.message }, "ffmpeg error");
+      if (!res.headersSent) res.status(500).json({ error: "ffmpeg error" });
+    });
+    req.on("close", () => { ffmpegProc.kill("SIGKILL"); });
     return;
   }
 

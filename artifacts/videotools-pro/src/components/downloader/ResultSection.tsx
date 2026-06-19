@@ -84,24 +84,13 @@ export function ResultSection({
       {
         onSuccess: (data) => {
           const dlUrl = data.downloadUrl;
-          const isStream = dlUrl.includes("/stream");
-          if (isStream) {
-            // Stream URLs (server-merged video/audio) — open in new tab.
-            // Mobile browsers block a.click() for long-running responses,
-            // but window.open triggers the download correctly.
-            window.open(dlUrl, "_blank");
-          } else {
-            // Direct CDN URLs — use <a> with download attribute
-            const a = document.createElement("a");
-            a.href = dlUrl;
-            a.download = data.filename || "download";
-            a.target = "_blank";
-            a.rel = "noopener";
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-          }
-          setTimeout(() => setDownloadingFormatId(null), 3000);
+          // window.location.href works on both desktop and mobile:
+          // browser sees Content-Disposition: attachment → starts download,
+          // stays on the current page (no navigation away).
+          // window.open() is blocked by mobile popup blockers when called
+          // from an async callback (not in the original user gesture).
+          window.location.href = dlUrl;
+          setTimeout(() => setDownloadingFormatId(null), 4000);
         },
         onError: () => {
           setDownloadingFormatId(null);
