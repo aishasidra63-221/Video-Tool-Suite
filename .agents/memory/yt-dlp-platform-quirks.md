@@ -27,17 +27,16 @@ yt-dlp -f "formatId+bestaudio/best" --merge-output-format mkv
 - iOS, tv_embedded: BLOCKED as of mid-2026 — do not use for audio
 
 **Audio stream (YouTube) — as of mid-2026:**
-ios client returns "not available on this app". tv_embedded returns "no longer supported in this application or device". Both are blocked.
+ios → "not available on this app". tv_embedded → "no longer supported". web client → "Requested format is not available" (audio-only streams blocked from server IPs without PO tokens). ALL three blocked.
 
-Working fix: android client → format 18 (360p combined mp4, always accessible from server IPs without PO tokens) → ffmpeg `-vn` extracts audio as MP3.
+**ONLY working approach:** android client → format 18 (360p combined mp4, no PO token needed from server IPs) → ffmpeg `-vn` extract audio as MP3.
 ```
 yt-dlp -f "18" --get-url --no-warnings --extractor-args "youtube:player_client=android" URL
 → ffmpeg -i <direct_url> -vn -c:a libmp3lame -b:a Nk -f mp3 pipe:1
 ```
-Fallback: web client yt-dlp pipe:
-```
-yt-dlp -f "bestaudio" -x --audio-format mp3 --extractor-args "youtube:player_client=web" -o - URL
-```
+File size is proportional to duration: 3min song ≈ 3MB, 43min video ≈ 41MB at 128kbps — this is correct and expected.
+Do NOT try `--extractor-args "youtube:player_client=web"` for audio — also fails from server IPs.
+Do NOT pipe `yt-dlp.stdout` to `res` when there is a fallback — pipe auto-closes response on process exit, blocking the fallback. Use `execAsync --get-url` + separate ffmpeg spawn instead.
 
 **DO NOT install yt-dlp-get-pot** without a running bgutil server — it breaks YouTube extraction.
 

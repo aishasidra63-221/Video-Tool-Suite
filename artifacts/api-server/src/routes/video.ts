@@ -540,67 +540,37 @@ router.get("/stream", async (req, res) => {
     const isYtAudio = /youtube\.com\/|youtu\.be\//.test(url);
 
     if (isYtAudio) {
-      // YouTube audio strategy:
-      // Primary: android client → format 18 (360p combined mp4, always accessible from
-      //          server IPs without PO tokens) → ffmpeg extracts audio only.
-      // Fallback: web client yt-dlp pipe with -x (slower but handles more videos).
-      // ios/tv_embedded clients are blocked by YouTube as of mid-2026.
-      req.log.info("YouTube audio: android format 18 → ffmpeg extract");
-
-      const spawnFfmpegAudio = (inputUrl: string) => {
+      // YouTube audio (mid-2026): ios/tv_embedded/web all blocked for audio-only from server IPs.
+      // Only reliable path: android client → format 18 (360p combined mp4, no PO token needed)
+      // → ffmpeg -vn extracts audio only. Output size = duration × bitrate (correct behaviour).
+      req.log.info("YouTube audio: format 18 → ffmpeg");
+      try {
+        const { stdout: f18out } = await execAsync(
+          `"${YTDLP_BIN}" -f "18" --get-url --no-warnings --socket-timeout 20 --extractor-args "youtube:player_client=android" "${url}"`,
+          { timeout: 25000 }
+        );
+        const f18url = f18out.trim().split("\n")[0];
+        if (!f18url || f18url.includes(".m3u8") || f18url.includes("/manifest/")) {
+          throw new Error("No direct URL");
+        }
         const ffmpeg = spawn("ffmpeg", [
-          "-i", inputUrl,
-          "-vn",
-          "-c:a", "libmp3lame",
+          "-i", f18url,
+          "-vn", "-c:a", "libmp3lame",
           "-b:a", `${mp3Bitrate}k`,
-          "-f", "mp3",
-          "pipe:1",
+          "-f", "mp3", "pipe:1",
         ]);
         ffmpeg.stdout.pipe(res);
         ffmpeg.stderr.on("data", (d: Buffer) =>
-          req.log.info({ stderr: d.toString().slice(0, 150) }, "ffmpeg yt audio")
+          req.log.info({ stderr: d.toString().slice(0, 150) }, "ffmpeg f18 audio")
         );
         ffmpeg.on("error", (e: Error) => {
           if (!res.headersSent) res.status(500).end();
-          req.log.error({ err: e.message }, "ffmpeg yt audio error");
+          req.log.error({ err: e.message }, "ffmpeg audio error");
         });
         req.on("close", () => ffmpeg.kill());
-      };
-
-      const spawnYtdlpWebAudio = () => {
-        req.log.info("YouTube audio: fallback web client yt-dlp pipe");
-        const ytdlp = spawn(YTDLP_BIN, [
-          "-f", audioFmt,
-          "-x", "--audio-format", "mp3",
-          "--audio-quality", `${mp3Bitrate}K`,
-          "--no-warnings",
-          "--extractor-args", "youtube:player_client=web",
-          "-o", "-",
-          url,
-        ]);
-        ytdlp.stdout.pipe(res);
-        ytdlp.stderr.on("data", (d: Buffer) =>
-          req.log.info({ stderr: d.toString().slice(0, 150) }, "yt-dlp web audio")
-        );
-        ytdlp.on("error", (e: Error) => {
-          if (!res.headersSent) res.status(500).end();
-          req.log.error({ err: e.message }, "yt-dlp web audio error");
-        });
-        req.on("close", () => ytdlp.kill());
-      };
-
-      try {
-        // Get direct CDN URL for format 18 (combined mp4) via android client
-        const cmd = `"${YTDLP_BIN}" -f "18" --get-url --no-warnings --socket-timeout 20 --extractor-args "youtube:player_client=android" "${url}"`;
-        const { stdout: f18out } = await execAsync(cmd, { timeout: 30000 });
-        const f18url = f18out.trim().split("\n")[0];
-        if (!f18url || f18url.includes(".m3u8") || f18url.includes("/manifest/")) {
-          throw new Error("No direct URL for format 18");
-        }
-        spawnFfmpegAudio(f18url);
       } catch (err) {
-        req.log.warn({ err: (err as Error).message }, "format 18 failed, trying web client");
-        spawnYtdlpWebAudio();
+        req.log.error({ err: (err as Error).message }, "YouTube audio failed");
+        if (!res.headersSent) res.status(500).json({ error: "Audio extraction failed. Try again." });
       }
     } else {
       // Non-YouTube: try direct CDN URL + ffmpeg (faster), fallback to yt-dlp pipe
