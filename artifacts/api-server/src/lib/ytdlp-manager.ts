@@ -316,6 +316,50 @@ export function getBrowserHeaderFlags(): string {
   return headers.join(" ");
 }
 
+// ── YouTube request rate limiter ─────────────────────────────────────────────
+// Caps server-wide yt-dlp calls to YouTube to 20/min.
+// Prevents the server IP from triggering YouTube's burst-detection.
+class TokenBucket {
+  private tokens: number;
+  private readonly capacity: number;
+  private readonly refillIntervalMs: number;
+  private lastRefill: number;
+
+  constructor(capacity: number, refillPerMinute: number) {
+    this.capacity = capacity;
+    this.tokens = capacity;
+    this.refillIntervalMs = 60_000 / refillPerMinute;
+    this.lastRefill = Date.now();
+  }
+
+  async acquire(): Promise<void> {
+    while (true) {
+      const now = Date.now();
+      const elapsed = now - this.lastRefill;
+      const refilled = Math.floor(elapsed / this.refillIntervalMs);
+      if (refilled > 0) {
+        this.tokens = Math.min(this.capacity, this.tokens + refilled);
+        this.lastRefill = now;
+      }
+      if (this.tokens > 0) {
+        this.tokens--;
+        return;
+      }
+      await new Promise((r) => setTimeout(r, this.refillIntervalMs));
+    }
+  }
+}
+
+// 20 calls / minute burst capacity
+export const ytRateLimiter = new TokenBucket(20, 20);
+
+// ── Helper: build extractor-args flag for a YouTube client ─────────────────
+// skip=translated_subs  → fewer API calls (real Android apps don't fetch these)
+// Centralised here so every call site gets the same safe args automatically.
+export function getYtExtractorArgs(client: string): string {
+  return `--extractor-args "youtube:player_client=${client};skip=translated_subs"`;
+}
+
 // ── YouTube Client Rotation ─────────────────────────────────────────────────
 // Tested 2026-06: ios, android_embedded, android_testsuite, android_music
 // all return full HD (4K/1440p/1080p/720p/480p) without PO token.
@@ -391,7 +435,7 @@ export async function withYtClientRotation<T>(
   const errors: string[] = [];
 
   for (const client of ordered) {
-    const flag = `--extractor-args "youtube:player_client=${client}"`;
+    const flag = getYtExtractorArgs(client);
     try {
       const result = await fn(flag);
       recordSuccess(client);
@@ -427,7 +471,7 @@ export async function withYtClientRotationFast<T>(
 
   const raceTop = Promise.any(
     top.map(async (client): Promise<Success> => {
-      const flag = `--extractor-args "youtube:player_client=${client}"`;
+      const flag = getYtExtractorArgs(client);
       try {
         const result = await fn(flag);
         recordSuccess(client);
@@ -437,7 +481,7 @@ export async function withYtClientRotationFast<T>(
         const msg = ((err as Error & { stderr?: string }).stderr || (err as Error).message || "").slice(0, 200);
         recordFailure(client);
         logger.warn({ client, err: msg }, "YouTube fast-race client failed");
-        if (isPermanentClientError(msg)) throw err; // bubble up permanent errors
+        if (isPermanentClientError(msg)) throw err;
         throw err;
       }
     })
@@ -449,7 +493,7 @@ export async function withYtClientRotationFast<T>(
     // Both top clients failed — try remaining sequentially
     const errors: string[] = [];
     for (const client of rest) {
-      const flag = `--extractor-args "youtube:player_client=${client}"`;
+      const flag = getYtExtractorArgs(client);
       try {
         const result = await fn(flag);
         recordSuccess(client);

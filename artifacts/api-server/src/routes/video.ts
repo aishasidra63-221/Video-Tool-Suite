@@ -4,7 +4,7 @@ import { promisify } from "util";
 import { existsSync, statSync, createReadStream, unlink } from "fs";
 import https from "https";
 import { GetVideoInfoBody, GetDownloadUrlBody } from "@workspace/api-zod";
-import { getYtDlpBin, withYtClientRotation, withYtClientRotationFast, hasCookies, getCookiesFlag, hasInstagramCookies, getInstagramCookiesFlag, getXffFlag, getBrowserHeaderFlags } from "../lib/ytdlp-manager";
+import { getYtDlpBin, withYtClientRotation, withYtClientRotationFast, hasCookies, getCookiesFlag, hasInstagramCookies, getInstagramCookiesFlag, getXffFlag, getBrowserHeaderFlags, getYtExtractorArgs, ytRateLimiter } from "../lib/ytdlp-manager";
 
 const execAsync = promisify(exec);
 const router = Router();
@@ -1124,6 +1124,7 @@ router.post("/info", async (req, res) => {
       } else {
         const fetchPromise = ytInfoSemaphore.acquire().then(async () => {
           try {
+            await ytRateLimiter.acquire(); // cap server-wide YouTube calls
             let out: string;
             try {
               const { result } = await withYtClientRotationFast((flag) => runInfo(flag));
@@ -1598,10 +1599,11 @@ router.get("/stream", async (req, res) => {
       if (!fetchPromise) {
         fetchPromise = (async (): Promise<string[]> => {
           const getUrlClients = ["android_embedded", "android_testsuite", "android_music", "tv_embedded"] as const;
+          await ytRateLimiter.acquire(); // cap server-wide YouTube calls
           for (const client of getUrlClients) {
             try {
               const { stdout: urlOut } = await execAsync(
-                `"${getYtDlpBin()}" -f "${resolvedFormat}" --get-url --no-warnings --socket-timeout 10 --no-check-formats --extractor-args "youtube:player_client=${client}" ${getXffFlag()} "${url}"`,
+                `"${getYtDlpBin()}" -f "${resolvedFormat}" --get-url --no-warnings --socket-timeout 10 --no-check-formats ${getYtExtractorArgs(client)} ${getXffFlag()} "${url}"`,
                 { timeout: 30000 }
               );
               const urls = urlOut.trim().split("\n").filter(Boolean);
