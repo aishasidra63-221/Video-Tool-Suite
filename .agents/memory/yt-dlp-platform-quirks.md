@@ -24,12 +24,20 @@ yt-dlp -f "formatId+bestaudio/best" --merge-output-format mkv
 **Client strategy:**
 - Default web client: 720p/1080p/4K as HLS — use for high quality
 - Android client (`--extractor-args "youtube:player_client=android"`): format 18, 360p combined mp4 — fallback for restricted videos
-- iOS, tv_embedded: intermediate fallbacks for info fetching
+- iOS, tv_embedded: BLOCKED as of mid-2026 — do not use for audio
 
-**Audio stream (YouTube):**
-`--get-url` returns HLS manifest → ffmpeg fails. Fix: yt-dlp pipe directly:
-`yt-dlp -f "bestaudio[ext=m4a]/bestaudio" -x --audio-format mp3 --audio-quality Nk -o - URL`
-yt-dlp handles HLS auth internally for single-stream audio extraction.
+**Audio stream (YouTube) — as of mid-2026:**
+ios client returns "not available on this app". tv_embedded returns "no longer supported in this application or device". Both are blocked.
+
+Working fix: android client → format 18 (360p combined mp4, always accessible from server IPs without PO tokens) → ffmpeg `-vn` extracts audio as MP3.
+```
+yt-dlp -f "18" --get-url --no-warnings --extractor-args "youtube:player_client=android" URL
+→ ffmpeg -i <direct_url> -vn -c:a libmp3lame -b:a Nk -f mp3 pipe:1
+```
+Fallback: web client yt-dlp pipe:
+```
+yt-dlp -f "bestaudio" -x --audio-format mp3 --extractor-args "youtube:player_client=web" -o - URL
+```
 
 **DO NOT install yt-dlp-get-pot** without a running bgutil server — it breaks YouTube extraction.
 
@@ -41,6 +49,7 @@ yt-dlp handles HLS auth internally for single-stream audio extraction.
 - Always 360p (640x360), ~46-102MB depending on length
 - Combined video+audio mp4 — no merge needed, direct CDN URL works
 - Accessible from server IPs without PO tokens
+- Audio quality: 128kbps AAC — good enough for MP3 extraction
 
 ## TikTok
 - Blocked on server IPs; yt-dlp returns empty stdout (no JSON, no error)
