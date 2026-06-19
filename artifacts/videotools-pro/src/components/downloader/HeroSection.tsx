@@ -104,7 +104,7 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
-              placeholder="Paste YouTube, TikTok or Snapchat URL here..."
+              placeholder="Paste YouTube, TikTok, Instagram or Snapchat URL here..."
               className={`w-full bg-black/50 border-2 rounded-2xl px-4 py-5 md:py-6 text-white placeholder:text-white/40 focus:outline-none transition-all text-lg shadow-inner pl-6 ${url ? 'pr-14' : 'pr-28'} ${
                 showSuccess ? 'border-green-500/50 focus:border-green-500' :
                 showError   ? 'border-red-500/50 focus:border-red-500' :

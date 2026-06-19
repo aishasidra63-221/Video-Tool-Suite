@@ -13,6 +13,7 @@ const PLATFORM_PATTERNS: Record<string, RegExp[]> = {
   YouTube: [/youtube\.com\/watch/, /youtu\.be\//, /youtube\.com\/shorts\//],
   TikTok: [/tiktok\.com\//],
   Snapchat: [/snapchat\.com/],
+  Instagram: [/instagram\.com\/(p|reel|tv)\//],
 };
 
 // ── TikTok Multi-API Fallback System ─────────────────────────────────────────
@@ -240,6 +241,151 @@ async function snapchatFetch(videoUrl: string): Promise<SnapchatData> {
     videoUrl: foundVideoUrl,
     duration: null,
   };
+}
+
+// ── Instagram Scraper ─────────────────────────────────────────────────────────
+// 3-layer fallback: embed page → og:video main page → yt-dlp
+// Instagram embed page works for public posts/reels without login.
+interface InstagramData {
+  title: string;
+  thumbnail: string | null;
+  videoUrl: string;
+  duration: number | null;
+}
+
+function igHttpGet(url: string, maxRedirects = 6): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (maxRedirects <= 0) return reject(new Error("Instagram: too many redirects"));
+    let parsed: URL;
+    try { parsed = new URL(url); } catch { return reject(new Error("Instagram: invalid URL")); }
+    const req = https.request({
+      hostname: parsed.hostname,
+      path: parsed.pathname + parsed.search,
+      method: "GET",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "identity",
+        "Referer": "https://www.instagram.com/",
+        "Cache-Control": "no-cache",
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "none",
+      },
+    }, (res) => {
+      if (res.statusCode && [301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+        const loc = res.headers.location.startsWith("http")
+          ? res.headers.location
+          : "https://www.instagram.com" + res.headers.location;
+        igHttpGet(loc, maxRedirects - 1).then(resolve).catch(reject);
+        return;
+      }
+      let data = "";
+      res.on("data", (chunk) => (data += chunk));
+      res.on("end", () => resolve(data));
+    });
+    req.on("error", reject);
+    req.setTimeout(20000, () => { req.destroy(); reject(new Error("Instagram fetch timeout")); });
+    req.end();
+  });
+}
+
+async function instagramFetch(videoUrl: string): Promise<InstagramData> {
+  // Extract shortcode from any Instagram URL format
+  const shortcodeMatch = videoUrl.match(/instagram\.com\/(p|reel|tv)\/([A-Za-z0-9_-]+)/);
+  if (!shortcodeMatch) throw new Error("Instagram: invalid URL — must be a post, reel, or IGTV link");
+  const shortcode = shortcodeMatch[2];
+
+  // ── Layer 1: Embed page (no login needed for public posts) ────────────────
+  // Instagram's embed page exposes <video src="..."> for public content
+  let videoUrl_: string | null = null;
+  let thumbnail: string | null = null;
+  let title = "Instagram Video";
+
+  try {
+    const embedHtml = await igHttpGet(`https://www.instagram.com/p/${shortcode}/embed/captioned/`);
+
+    // Video URL: look for <video src="..." in embed HTML
+    const videoTagMatch = embedHtml.match(/video_url":"([^"]+)"/) ||
+      embedHtml.match(/src="(https:\/\/[^"]*scontent[^"]*\.mp4[^"]*)"/) ||
+      embedHtml.match(/<video[^>]+src="([^"]+)"/) ||
+      embedHtml.match(/videoUrl["']?\s*:\s*["']([^"']+\.mp4[^"']*)/);
+    if (videoTagMatch?.[1]) {
+      videoUrl_ = videoTagMatch[1].replace(/\\u0026/g, "&").replace(/\\/g, "");
+    }
+
+    // Thumbnail from embed
+    const thumbMatch = embedHtml.match(/display_url":"([^"]+)"/) ||
+      embedHtml.match(/thumbnail_src":"([^"]+)"/) ||
+      embedHtml.match(/<img[^>]+src="(https:\/\/[^"]*scontent[^"]*)"[^>]*class="[^"]*EmbedMedia[^"]*"/);
+    if (thumbMatch?.[1]) {
+      thumbnail = thumbMatch[1].replace(/\\u0026/g, "&").replace(/\\/g, "");
+    }
+
+    // Title from embed caption
+    const captionMatch = embedHtml.match(/<div class="[^"]*Caption[^"]*"[^>]*>[\s\S]*?<\/div>/) ||
+      embedHtml.match(/<title>([^<]+)<\/title>/);
+    if (captionMatch) {
+      const raw = captionMatch[0].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 100);
+      if (raw) title = raw;
+    }
+  } catch { /* continue to next layer */ }
+
+  // ── Layer 2: og:video from main page ─────────────────────────────────────
+  if (!videoUrl_) {
+    try {
+      const mainHtml = await igHttpGet(`https://www.instagram.com/p/${shortcode}/`);
+
+      const ogVideoMatch =
+        mainHtml.match(/<meta[^>]+property="og:video:secure_url"[^>]+content="([^"]+)"/) ||
+        mainHtml.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:video:secure_url"/) ||
+        mainHtml.match(/<meta[^>]+property="og:video"[^>]+content="([^"]+)"/) ||
+        mainHtml.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:video"/);
+      if (ogVideoMatch?.[1]) videoUrl_ = ogVideoMatch[1];
+
+      if (!thumbnail) {
+        const ogImageMatch =
+          mainHtml.match(/<meta[^>]+property="og:image"[^>]+content="([^"]+)"/) ||
+          mainHtml.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:image"/);
+        if (ogImageMatch?.[1]) thumbnail = ogImageMatch[1];
+      }
+
+      const ogTitleMatch =
+        mainHtml.match(/<meta[^>]+property="og:title"[^>]+content="([^"]+)"/) ||
+        mainHtml.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:title"/);
+      if (ogTitleMatch?.[1]) {
+        title = ogTitleMatch[1].replace(/\s*on Instagram\s*$/i, "").replace(/^"/, "").replace(/"$/, "").trim();
+      }
+    } catch { /* continue to next layer */ }
+  }
+
+  // ── Layer 3: yt-dlp (works for many public reels) ───────────────────────
+  if (!videoUrl_) {
+    try {
+      const bin = getYtDlpBin();
+      const { stdout } = await execAsync(
+        `"${bin}" --dump-json --no-playlist --no-warnings --socket-timeout 15 "${videoUrl}"`,
+        { timeout: 25000 }
+      );
+      const info = JSON.parse(stdout.trim().split("\n")[0]);
+      if (info.url) videoUrl_ = info.url;
+      else if (info.formats) {
+        const best = info.formats.filter((f: any) => f.ext === "mp4").slice(-1)[0];
+        if (best?.url) videoUrl_ = best.url;
+      }
+      if (info.thumbnail && !thumbnail) thumbnail = info.thumbnail;
+      if (info.title) title = info.title;
+    } catch { /* all layers failed */ }
+  }
+
+  if (!videoUrl_) {
+    throw new Error(
+      "Instagram: could not extract video. Make sure the post is public and not age-restricted."
+    );
+  }
+
+  return { title, thumbnail, videoUrl: videoUrl_, duration: null };
 }
 
 function detectPlatform(url: string): string {
@@ -554,6 +700,7 @@ router.post("/info", async (req, res) => {
   const isYouTube = platform === "YouTube";
   const isTikTok = platform === "TikTok";
   const isSnapchat = platform === "Snapchat";
+  const isInstagram = platform === "Instagram";
 
   const runInfo = async (clientFlag = "", extraFlags = ""): Promise<string> => {
     const bin = getYtDlpBin();
@@ -608,6 +755,30 @@ router.post("/info", async (req, res) => {
         formats: [
           { formatId: "snapchat:video", quality: "HD", label: "Video (MP4)", type: "video" as const, filesize: null, badge: "HD" },
           { formatId: "snapchat:audio", quality: "MP3", label: "Audio (MP3)", type: "audio" as const, filesize: null, badge: null },
+        ],
+      });
+    }
+
+    // ── Instagram: 3-layer scraper (embed → og:video → yt-dlp) ──────────────
+    if (isInstagram) {
+      const cached = getCached(url);
+      let ig: InstagramData;
+      if (cached) {
+        req.log.info("cache hit (instagram)");
+        ig = JSON.parse(cached);
+      } else {
+        ig = await instagramFetch(url);
+        setCache(url, JSON.stringify(ig));
+      }
+      return res.json({
+        url,
+        title: ig.title || "Instagram Video",
+        thumbnail: ig.thumbnail || null,
+        duration: ig.duration || null,
+        platform,
+        formats: [
+          { formatId: "instagram:video", quality: "HD", label: "Video (MP4)", type: "video" as const, filesize: null, badge: "HD" },
+          { formatId: "instagram:audio", quality: "MP3", label: "Audio (MP3)", type: "audio" as const, filesize: null, badge: null },
         ],
       });
     }
@@ -704,6 +875,34 @@ router.post("/download", async (req, res) => {
   if (!isValidUrl(url)) {
     res.status(400).json({ error: "Invalid URL." });
     return;
+  }
+
+  // ── Instagram: video or audio download ───────────────────────────────────
+  if (/instagram\.com\/(p|reel|tv)\//.test(url)) {
+    try {
+      const cached = getCached(url);
+      let ig: InstagramData;
+      if (cached) {
+        ig = JSON.parse(cached);
+      } else {
+        ig = await instagramFetch(url);
+        setCache(url, JSON.stringify(ig));
+      }
+      if (!ig.videoUrl) {
+        res.status(422).json({ error: "Instagram video URL not available." });
+        return;
+      }
+      if (formatId === "instagram:audio") {
+        const streamUrl = `/api/video/stream?snap_cdn=${encodeURIComponent(ig.videoUrl)}&audio=true&bitrate=192`;
+        res.json({ downloadUrl: streamUrl, filename: "instagram_audio.mp3" });
+      } else {
+        res.json({ downloadUrl: ig.videoUrl, filename: "instagram_video.mp4" });
+      }
+      return;
+    } catch (err) {
+      res.status(422).json({ error: "Failed to get Instagram video. Make sure it's a public post or reel." });
+      return;
+    }
   }
 
   // ── Snapchat: video or audio download ────────────────────────────────────

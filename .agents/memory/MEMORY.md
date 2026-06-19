@@ -1,1 +1,2 @@
 - [yt-dlp platform quirks](yt-dlp-platform-quirks.md) — YouTube audio acodec=null, TikTok blocked, Facebook no height, HLS routing
+- [Instagram scraper approach](instagram-scraper.md) — 3-layer: embed page → og:video → yt-dlp; public only

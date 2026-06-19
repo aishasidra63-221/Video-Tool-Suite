@@ -4,6 +4,7 @@ export function detectPlatform(url: string): string | null {
   if (lowerUrl.includes("youtube.com") || lowerUrl.includes("youtu.be")) return "youtube";
   if (lowerUrl.includes("tiktok.com")) return "tiktok";
   if (lowerUrl.includes("snapchat.com")) return "snapchat";
+  if (lowerUrl.includes("instagram.com")) return "instagram";
   return null;
 }
 
