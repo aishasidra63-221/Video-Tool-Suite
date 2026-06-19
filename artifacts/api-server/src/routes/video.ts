@@ -1329,7 +1329,10 @@ router.post("/download", async (req, res) => {
         res.status(422).json({ error: "TikTok download URL not available." });
         return;
       }
-      res.json({ downloadUrl: directUrl, filename });
+      // Proxy TikTok through our server — TikTok CDN blocks direct browser access
+      // (missing Referer/Origin headers). Server fetches with correct headers and pipes to client.
+      const proxyUrl = `/api/video/stream?cdn_proxy=${encodeURIComponent(directUrl)}&cdn_filename=${encodeURIComponent(filename)}`;
+      res.json({ downloadUrl: proxyUrl, filename });
       return;
     } catch (err) {
       res.status(422).json({ error: "Failed to get TikTok download URL." });
@@ -1410,13 +1413,60 @@ router.post("/download", async (req, res) => {
 // Audio: ffmpeg converts to MP3
 // ─────────────────────────────────────────────────────────────────────────────
 router.get("/stream", async (req, res) => {
-  const { url, formatId, audio, bitrate, snap_cdn } = req.query as {
+  const { url, formatId, audio, bitrate, snap_cdn, cdn_proxy, cdn_filename } = req.query as {
     url?: string;
     formatId?: string;
     audio?: string;
     bitrate?: string;
     snap_cdn?: string;
+    cdn_proxy?: string;
+    cdn_filename?: string;
   };
+
+  // ── Generic CDN proxy — fetches URL server-side with spoofed headers ─────
+  // Used for TikTok (CDN blocks direct browser access without Referer/UA)
+  if (cdn_proxy) {
+    try {
+      const cdnUrl = decodeURIComponent(cdn_proxy);
+      const parsed = new URL(cdnUrl);
+      const isTikTok = parsed.hostname.includes("tiktok");
+      const reqHeaders: Record<string, string> = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+        "Accept": "*/*",
+        "Accept-Encoding": "identity",
+      };
+      if (isTikTok) {
+        reqHeaders["Referer"] = "https://www.tiktok.com/";
+        reqHeaders["Origin"] = "https://www.tiktok.com";
+      }
+      const filename = cdn_filename ? decodeURIComponent(cdn_filename) : "download.mp4";
+      const isAudioFile = filename.endsWith(".mp3") || filename.endsWith(".m4a");
+      const upstream = https.request({
+        hostname: parsed.hostname,
+        path: parsed.pathname + parsed.search,
+        method: "GET",
+        headers: reqHeaders,
+      }, (upstream_res) => {
+        const ct = upstream_res.headers["content-type"] || (isAudioFile ? "audio/mpeg" : "video/mp4");
+        res.setHeader("Content-Type", ct);
+        res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+        if (upstream_res.headers["content-length"]) {
+          res.setHeader("Content-Length", upstream_res.headers["content-length"]);
+        }
+        upstream_res.pipe(res);
+      });
+      upstream.on("error", (e) => {
+        req.log?.warn?.({ err: e.message }, "cdn_proxy error");
+        if (!res.headersSent) res.status(502).json({ error: "CDN fetch failed." });
+      });
+      upstream.setTimeout(20000, () => { upstream.destroy(); });
+      req.on("close", () => upstream.destroy());
+      upstream.end();
+    } catch (e) {
+      res.status(400).json({ error: "Invalid cdn_proxy URL." });
+    }
+    return;
+  }
 
   // ── Snapchat CDN audio extraction (direct ffmpeg, no yt-dlp needed) ─────
   if (snap_cdn) {
