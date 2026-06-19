@@ -128,6 +128,7 @@ interface TikWMData {
 // ── Snapchat Scraper — extracts video from __NEXT_DATA__ like competitors ─────
 interface SnapchatData {
   title: string;
+  uploader: string | null;
   thumbnail: string | null;
   videoUrl: string;
   duration: number | null;
@@ -234,12 +235,12 @@ async function snapchatFetch(videoUrl: string): Promise<SnapchatData> {
     throw new Error("Snapchat: no video found — the video may be private, deleted, or not a Spotlight video");
   }
 
-  // ── Title ────────────────────────────────────────────────────────────────
+  // ── Title + Username ─────────────────────────────────────────────────────
   // og:title format: "{N} likes | {ACTUAL TITLE} | @user | Posted ... | Snapchat"
-  // We only want the actual title part (between first and second pipe)
   const titleMatch = html.match(/<meta[^>]+property="og:title"[^>]+content="([^"]+)"/) ||
     html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:title"/);
   let title = "Snapchat Video";
+  let uploader: string | null = null;
   if (titleMatch) {
     const raw = titleMatch[1];
     const parts = raw.split(/\s*\|\s*/);
@@ -255,6 +256,10 @@ async function snapchatFetch(videoUrl: string): Promise<SnapchatData> {
     } else {
       title = raw.replace(/\s*\|\s*Snapchat\s*$/, "").trim();
     }
+
+    // Extract @username — the part starting with "@" in the pipe-separated list
+    const userPart = parts.find((p) => p.trim().startsWith("@"));
+    if (userPart) uploader = userPart.trim().replace(/^@/, "");
   }
 
   // ── Thumbnail ────────────────────────────────────────────────────────────
@@ -271,6 +276,7 @@ async function snapchatFetch(videoUrl: string): Promise<SnapchatData> {
 
   return {
     title,
+    uploader,
     thumbnail,
     videoUrl: foundVideoUrl,
     duration: null,
@@ -893,6 +899,7 @@ router.post("/info", async (req, res) => {
       return res.json({
         url,
         title: snap.title || "Snapchat Video",
+        uploader: snap.uploader || null,
         thumbnail: snap.thumbnail || null,
         duration: snap.duration || null,
         platform,
