@@ -3,9 +3,8 @@ import { useGetDownloadUrl } from "@workspace/api-client-react";
 import { formatDuration, formatBytes, detectPlatform } from "@/lib/video-utils";
 import { PLATFORMS } from "./platform-icons";
 import { motion, AnimatePresence } from "framer-motion";
-import { Download, Film, Music, AlertTriangle, RefreshCw, ImageDown, Image, Lock, Settings } from "lucide-react";
+import { Download, Film, Music, AlertTriangle, RefreshCw, ImageDown, Image } from "lucide-react";
 import { VideoInfo } from "@workspace/api-client-react/src/generated/api.schemas";
-import { Link } from "wouter";
 
 // Smart thumbnail: direct URL → proxy URL → icon placeholder
 function SmartThumbnail({ src, alt, platform }: { src: string; alt: string; platform: string }) {
@@ -134,67 +133,7 @@ export function ResultSection({
           </motion.div>
         )}
 
-        {error && !isLoading && errorCode === "INSTAGRAM_COOKIES_REQUIRED" && (
-          <motion.div
-            key="ig-error"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="glass rounded-3xl overflow-hidden shadow-2xl"
-          >
-            {/* Pink gradient header */}
-            <div className="bg-gradient-to-r from-pink-600 via-purple-600 to-orange-500 p-6 flex items-center gap-4">
-              <div className="w-14 h-14 rounded-2xl bg-white/20 flex items-center justify-center flex-shrink-0">
-                <Lock className="w-7 h-7 text-white" />
-              </div>
-              <div className="text-left">
-                <h3 className="text-xl font-bold text-white">Instagram Setup Required</h3>
-                <p className="text-white/80 text-sm mt-0.5">One-time setup needed to download Instagram videos</p>
-              </div>
-            </div>
-
-            <div className="p-6 space-y-4">
-              <p className="text-slate-300 text-sm leading-relaxed">
-                Instagram blocks all server-side access without a logged-in session. You need to paste your Instagram cookies once — after that, all public reels and posts will work.
-              </p>
-
-              <div className="bg-white/5 rounded-2xl p-4 space-y-2 text-sm text-slate-300">
-                <div className="flex items-start gap-3">
-                  <span className="w-6 h-6 rounded-full bg-pink-500/30 text-pink-300 flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">1</span>
-                  <span>Open Instagram in your browser and log in</span>
-                </div>
-                <div className="flex items-start gap-3">
-                  <span className="w-6 h-6 rounded-full bg-pink-500/30 text-pink-300 flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">2</span>
-                  <span>Install the <strong className="text-white">Cookie-Editor</strong> browser extension</span>
-                </div>
-                <div className="flex items-start gap-3">
-                  <span className="w-6 h-6 rounded-full bg-pink-500/30 text-pink-300 flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">3</span>
-                  <span>Export cookies in Netscape format from instagram.com</span>
-                </div>
-                <div className="flex items-start gap-3">
-                  <span className="w-6 h-6 rounded-full bg-pink-500/30 text-pink-300 flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">4</span>
-                  <span>Paste them in <strong className="text-white">Settings → Instagram Unlock</strong></span>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-3 flex-wrap">
-                <Link href="/settings">
-                  <button className="flex items-center gap-2 bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white px-6 py-3 rounded-xl font-semibold transition-all shadow-lg">
-                    <Settings className="w-4 h-4" />
-                    Go to Settings
-                  </button>
-                </Link>
-                <button
-                  onClick={onReset}
-                  className="flex items-center gap-2 bg-white/10 hover:bg-white/20 text-white px-6 py-3 rounded-xl font-medium transition-colors"
-                >
-                  Try Another URL
-                </button>
-              </div>
-            </div>
-          </motion.div>
-        )}
-
-        {error && !isLoading && errorCode !== "INSTAGRAM_COOKIES_REQUIRED" && (
+        {error && !isLoading && (
           <motion.div
             key="error"
             initial={{ opacity: 0, y: 20 }}

@@ -721,43 +721,30 @@ async function _instagramFetchCore(videoUrl: string): Promise<InstagramData> {
     if (title === "Instagram Video" && oe.title && oe.title !== `Video by ${oe.author}`) title = oe.title;
   }
 
-  // ── Layer 3: yt-dlp (primary video extractor — try with cookies first) ───────
+  // ── Layer 3: yt-dlp (primary video extractor) ────────────────────────────────
   if (!videoUrl_) {
     const bin = getYtDlpBin();
-    const cookiesFlag = getInstagramCookiesFlag();
-    const attempts = cookiesFlag
-      ? [`${cookiesFlag}`, ""]          // with cookies first, then without
-      : [""];                           // without cookies only
-
-    for (const cf of attempts) {
-      try {
-        const cmd = `"${bin}" --dump-json --no-playlist --no-warnings --socket-timeout 10 ${cf} "${videoUrl}"`;
-        const { stdout } = await execAsync(cmd, { timeout: 20000 });
-        const info = JSON.parse(stdout.trim().split("\n")[0]);
-        if (info.url) {
-          videoUrl_ = info.url;
-        } else if (info.formats) {
-          const best = (info.formats as any[])
-            .filter((f) => f.ext === "mp4" && f.url)
-            .slice(-1)[0];
-          if (best?.url) videoUrl_ = best.url;
-        }
-        if (info.thumbnail && !thumbnail) thumbnail = info.thumbnail;
-        if (info.title && info.title !== "Instagram Video") title = info.title;
-        if (!uploader && info.uploader) uploader = info.uploader;
-        if (!uploader && info.uploader_id) uploader = info.uploader_id;
-        if (videoUrl_) break;
-      } catch { /* try next attempt */ }
-    }
+    try {
+      const cmd = `"${bin}" --dump-json --no-playlist --no-warnings --socket-timeout 10 "${videoUrl}"`;
+      const { stdout } = await execAsync(cmd, { timeout: 20000 });
+      const info = JSON.parse(stdout.trim().split("\n")[0]);
+      if (info.url) {
+        videoUrl_ = info.url;
+      } else if (info.formats) {
+        const best = (info.formats as any[])
+          .filter((f) => f.ext === "mp4" && f.url)
+          .slice(-1)[0];
+        if (best?.url) videoUrl_ = best.url;
+      }
+      if (info.thumbnail && !thumbnail) thumbnail = info.thumbnail;
+      if (info.title && info.title !== "Instagram Video") title = info.title;
+      if (!uploader && info.uploader) uploader = info.uploader;
+      if (!uploader && info.uploader_id) uploader = info.uploader_id;
+    } catch { /* ignore */ }
   }
 
   if (!videoUrl_) {
-    if (!hasInstagramCookies()) {
-      const err = new Error("INSTAGRAM_COOKIES_REQUIRED") as any;
-      err.code = "INSTAGRAM_COOKIES_REQUIRED";
-      throw err;
-    }
-    throw new Error("Instagram: post private ho sakta hai ya delete ho gaya ho.");
+    throw new Error("Instagram: video nahi mila — post private ya delete ho sakti hai.");
   }
 
   return { title, uploader, thumbnail, videoUrl: videoUrl_, duration: null };
