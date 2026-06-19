@@ -248,6 +248,7 @@ async function snapchatFetch(videoUrl: string): Promise<SnapchatData> {
 // Instagram embed page works for public posts/reels without login.
 interface InstagramData {
   title: string;
+  uploader: string | null;
   thumbnail: string | null;
   videoUrl: string;
   duration: number | null;
@@ -292,21 +293,25 @@ function igHttpGet(url: string, maxRedirects = 6): Promise<string> {
 }
 
 async function instagramFetch(videoUrl: string): Promise<InstagramData> {
-  // Extract shortcode from any Instagram URL format
   const shortcodeMatch = videoUrl.match(/instagram\.com\/(p|reel|tv)\/([A-Za-z0-9_-]+)/);
   if (!shortcodeMatch) throw new Error("Instagram: invalid URL — must be a post, reel, or IGTV link");
   const shortcode = shortcodeMatch[2];
 
-  // ── Layer 1: Embed page (no login needed for public posts) ────────────────
-  // Instagram's embed page exposes <video src="..."> for public content
   let videoUrl_: string | null = null;
   let thumbnail: string | null = null;
   let title = "Instagram Video";
+  let uploader: string | null = null;
 
-  try {
-    const embedHtml = await igHttpGet(`https://www.instagram.com/p/${shortcode}/embed/captioned/`);
+  // ── Layer 1 + 2 run in PARALLEL for speed ─────────────────────────────────
+  const [embedResult, mainResult] = await Promise.allSettled([
+    igHttpGet(`https://www.instagram.com/p/${shortcode}/embed/captioned/`),
+    igHttpGet(`https://www.instagram.com/p/${shortcode}/`),
+  ]);
 
-    // Video URL: look for <video src="..." in embed HTML
+  // ── Process Layer 1: embed page ───────────────────────────────────────────
+  if (embedResult.status === "fulfilled") {
+    const embedHtml = embedResult.value;
+
     const videoTagMatch = embedHtml.match(/video_url":"([^"]+)"/) ||
       embedHtml.match(/src="(https:\/\/[^"]*scontent[^"]*\.mp4[^"]*)"/) ||
       embedHtml.match(/<video[^>]+src="([^"]+)"/) ||
@@ -315,7 +320,6 @@ async function instagramFetch(videoUrl: string): Promise<InstagramData> {
       videoUrl_ = videoTagMatch[1].replace(/\\u0026/g, "&").replace(/\\/g, "");
     }
 
-    // Thumbnail from embed
     const thumbMatch = embedHtml.match(/display_url":"([^"]+)"/) ||
       embedHtml.match(/thumbnail_src":"([^"]+)"/) ||
       embedHtml.match(/<img[^>]+src="(https:\/\/[^"]*scontent[^"]*)"[^>]*class="[^"]*EmbedMedia[^"]*"/);
@@ -323,44 +327,67 @@ async function instagramFetch(videoUrl: string): Promise<InstagramData> {
       thumbnail = thumbMatch[1].replace(/\\u0026/g, "&").replace(/\\/g, "");
     }
 
-    // Title from embed caption
-    const captionMatch = embedHtml.match(/<div class="[^"]*Caption[^"]*"[^>]*>[\s\S]*?<\/div>/) ||
+    // Extract username from embed JSON data
+    const usernameMatch = embedHtml.match(/"username"\s*:\s*"([^"]+)"/) ||
+      embedHtml.match(/class="[^"]*UsernameText[^"]*"[^>]*>([^<]+)</) ||
+      embedHtml.match(/"owner"\s*:\s*\{[^}]*"username"\s*:\s*"([^"]+)"/);
+    if (usernameMatch?.[1]) uploader = usernameMatch[1];
+
+    // Title from embed caption text
+    const captionMatch = embedHtml.match(/<div[^>]+class="[^"]*Caption[^"]*"[^>]*>([\s\S]*?)<\/div>/) ||
       embedHtml.match(/<title>([^<]+)<\/title>/);
     if (captionMatch) {
-      const raw = captionMatch[0].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 100);
-      if (raw) title = raw;
+      const raw = captionMatch[1] || captionMatch[0];
+      const cleaned = raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
+      if (cleaned && cleaned.length > 5) title = cleaned;
     }
-  } catch { /* continue to next layer */ }
+  }
 
-  // ── Layer 2: og:video from main page ─────────────────────────────────────
-  if (!videoUrl_) {
-    try {
-      const mainHtml = await igHttpGet(`https://www.instagram.com/p/${shortcode}/`);
+  // ── Process Layer 2: main page (og: tags) ────────────────────────────────
+  if (mainResult.status === "fulfilled") {
+    const mainHtml = mainResult.value;
 
+    if (!videoUrl_) {
       const ogVideoMatch =
         mainHtml.match(/<meta[^>]+property="og:video:secure_url"[^>]+content="([^"]+)"/) ||
         mainHtml.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:video:secure_url"/) ||
         mainHtml.match(/<meta[^>]+property="og:video"[^>]+content="([^"]+)"/) ||
         mainHtml.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:video"/);
       if (ogVideoMatch?.[1]) videoUrl_ = ogVideoMatch[1];
+    }
 
-      if (!thumbnail) {
-        const ogImageMatch =
-          mainHtml.match(/<meta[^>]+property="og:image"[^>]+content="([^"]+)"/) ||
-          mainHtml.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:image"/);
-        if (ogImageMatch?.[1]) thumbnail = ogImageMatch[1];
-      }
+    if (!thumbnail) {
+      const ogImageMatch =
+        mainHtml.match(/<meta[^>]+property="og:image"[^>]+content="([^"]+)"/) ||
+        mainHtml.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:image"/);
+      if (ogImageMatch?.[1]) thumbnail = ogImageMatch[1];
+    }
 
-      const ogTitleMatch =
-        mainHtml.match(/<meta[^>]+property="og:title"[^>]+content="([^"]+)"/) ||
-        mainHtml.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:title"/);
-      if (ogTitleMatch?.[1]) {
-        title = ogTitleMatch[1].replace(/\s*on Instagram\s*$/i, "").replace(/^"/, "").replace(/"$/, "").trim();
+    const ogTitleMatch =
+      mainHtml.match(/<meta[^>]+property="og:title"[^>]+content="([^"]+)"/) ||
+      mainHtml.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:title"/);
+    if (ogTitleMatch?.[1]) {
+      const rawTitle = ogTitleMatch[1];
+      // Extract uploader from "username on Instagram: ..." or "Name (@handle) •"
+      if (!uploader) {
+        const fromTitle = rawTitle.match(/^"?([^"•\n]+?)\s+on\s+Instagram/i) ||
+          rawTitle.match(/^"?([^"•\n]+?)\s*•\s*Instagram/i);
+        if (fromTitle?.[1]) uploader = fromTitle[1].replace(/^@/, "").trim();
       }
-    } catch { /* continue to next layer */ }
+      // Extract caption as title: 'username on Instagram: "caption text"'
+      const captionInTitle = rawTitle.match(/on\s+Instagram\s*:\s*[""](.+?)[""]?\s*$/i);
+      if (captionInTitle?.[1]) {
+        title = captionInTitle[1].trim().slice(0, 200);
+      } else if (title === "Instagram Video") {
+        title = rawTitle
+          .replace(/\s*on Instagram\s*$/i, "")
+          .replace(/^[""]/, "").replace(/[""]$/, "")
+          .trim();
+      }
+    }
   }
 
-  // ── Layer 3: yt-dlp (works for many public reels) ───────────────────────
+  // ── Layer 3: yt-dlp fallback ──────────────────────────────────────────────
   if (!videoUrl_) {
     try {
       const bin = getYtDlpBin();
@@ -376,6 +403,8 @@ async function instagramFetch(videoUrl: string): Promise<InstagramData> {
       }
       if (info.thumbnail && !thumbnail) thumbnail = info.thumbnail;
       if (info.title) title = info.title;
+      if (!uploader && info.uploader) uploader = info.uploader;
+      if (!uploader && info.uploader_id) uploader = info.uploader_id;
     } catch { /* all layers failed */ }
   }
 
@@ -385,7 +414,7 @@ async function instagramFetch(videoUrl: string): Promise<InstagramData> {
     );
   }
 
-  return { title, thumbnail, videoUrl: videoUrl_, duration: null };
+  return { title, uploader, thumbnail, videoUrl: videoUrl_, duration: null };
 }
 
 function detectPlatform(url: string): string {
@@ -773,6 +802,7 @@ router.post("/info", async (req, res) => {
       return res.json({
         url,
         title: ig.title || "Instagram Video",
+        uploader: ig.uploader || null,
         thumbnail: ig.thumbnail || null,
         duration: ig.duration || null,
         platform,
@@ -821,6 +851,7 @@ router.post("/info", async (req, res) => {
     res.json({
       url,
       title: info.title || "Unknown Video",
+      uploader: (info as any).uploader || (info as any).uploader_id || (info as any).channel || null,
       thumbnail: info.thumbnail || null,
       duration: info.duration || null,
       platform,
@@ -1311,18 +1342,32 @@ router.get("/stream", async (req, res) => {
   }
 });
 
-// ── Thumbnail proxy (cross-origin download fix) ───────────────────────────────
+// ── Thumbnail proxy (cross-origin display + download fix) ────────────────────
+// Supports ?download=true to force Content-Disposition attachment
 router.get("/thumbnail", async (req, res) => {
   const url = String(req.query.url || "").trim();
+  const isDownload = req.query.download === "true";
   if (!url || !/^https?:\/\//.test(url)) {
     return res.status(400).json({ error: "Invalid URL" });
   }
   try {
-    const response = await fetch(url);
+    const isInstagram = url.includes("instagram") || url.includes("cdninstagram") || url.includes("fbcdn");
+    const headers: Record<string, string> = {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    };
+    if (isInstagram) {
+      headers["Referer"] = "https://www.instagram.com/";
+      headers["Origin"] = "https://www.instagram.com";
+    }
+    const response = await fetch(url, { headers });
     if (!response.ok) return res.status(502).json({ error: "Failed to fetch thumbnail" });
     const contentType = response.headers.get("content-type") || "image/jpeg";
     res.setHeader("Content-Type", contentType);
-    res.setHeader("Content-Disposition", 'attachment; filename="thumbnail.jpg"');
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    if (isDownload) {
+      res.setHeader("Content-Disposition", 'attachment; filename="thumbnail.jpg"');
+    }
     const buffer = await response.arrayBuffer();
     res.send(Buffer.from(buffer));
   } catch {

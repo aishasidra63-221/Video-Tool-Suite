@@ -13,6 +13,11 @@ export interface VideoInfo {
   /** Video title */
   title: string;
   /**
+     * Username or channel name of the video owner
+     * @nullable
+     */
+  uploader?: string | null;
+  /**
      * Thumbnail URL
      * @nullable
      */

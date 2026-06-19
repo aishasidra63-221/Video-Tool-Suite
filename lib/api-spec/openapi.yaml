@@ -140,6 +140,9 @@ components:
         title:
           type: string
           description: Video title
+        uploader:
+          type: ["string", "null"]
+          description: Username or channel name of the video owner
         thumbnail:
           type: ["string", "null"]
           description: Thumbnail URL

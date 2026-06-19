@@ -49,7 +49,7 @@ export function ResultSection({
   const handleThumbnailDownload = (url: string) => {
     if (!url || downloadingThumb) return;
     setDownloadingThumb(true);
-    const proxyUrl = `/api/video/thumbnail?url=${encodeURIComponent(url)}`;
+    const proxyUrl = `/api/video/thumbnail?url=${encodeURIComponent(url)}&download=true`;
     const a = document.createElement("a");
     a.href = proxyUrl;
     a.download = "thumbnail.jpg";
@@ -57,6 +57,14 @@ export function ResultSection({
     a.click();
     document.body.removeChild(a);
     setTimeout(() => setDownloadingThumb(false), 3000);
+  };
+
+  const getDisplayThumbnail = (thumbnail: string | null, platform: string) => {
+    if (!thumbnail) return null;
+    if (platform === "Instagram" || thumbnail.includes("cdninstagram") || thumbnail.includes("fbcdn")) {
+      return `/api/video/thumbnail?url=${encodeURIComponent(thumbnail)}`;
+    }
+    return thumbnail;
   };
 
   if (!isLoading && !info && !error) return null;
@@ -117,24 +125,31 @@ export function ResultSection({
             animate={{ opacity: 1, y: 0 }}
             className="glass rounded-3xl overflow-hidden shadow-2xl"
           >
-            {/* Platform + Title Header */}
-            <div className="flex items-center gap-3 px-6 pt-6 pb-4 border-b border-white/10">
+            {/* Platform + Title + Uploader Header */}
+            <div className="flex items-start gap-3 px-6 pt-6 pb-4 border-b border-white/10">
               {platform ? (
                 <div
-                  className="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold shrink-0"
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold shrink-0 mt-0.5"
                   style={{ background: `${platform.color}22`, border: `1px solid ${platform.color}55` }}
                 >
                   <platform.IconComponent className="w-4 h-4" style={{ color: platform.color }} />
                   <span style={{ color: platform.color }}>{platform.name}</span>
                 </div>
               ) : (
-                <div className="px-3 py-1.5 rounded-full bg-white/10 text-xs font-bold text-white/80 shrink-0">
+                <div className="px-3 py-1.5 rounded-full bg-white/10 text-xs font-bold text-white/80 shrink-0 mt-0.5">
                   {info.platform}
                 </div>
               )}
-              <h3 className="text-base font-bold text-white line-clamp-1 leading-snug">
-                {info.title}
-              </h3>
+              <div className="flex flex-col gap-0.5 min-w-0">
+                {info.uploader && (
+                  <span className="text-sm font-semibold text-primary/90 leading-tight truncate">
+                    @{info.uploader}
+                  </span>
+                )}
+                <h3 className="text-base font-bold text-white line-clamp-2 leading-snug">
+                  {info.title}
+                </h3>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-5 gap-0">
@@ -143,7 +158,7 @@ export function ResultSection({
                 <div className="relative rounded-xl overflow-hidden aspect-video bg-black mb-4 shadow-lg">
                   {info.thumbnail ? (
                     <img
-                      src={info.thumbnail}
+                      src={getDisplayThumbnail(info.thumbnail, info.platform)}
                       alt={info.title}
                       className="w-full h-full object-cover"
                     />
