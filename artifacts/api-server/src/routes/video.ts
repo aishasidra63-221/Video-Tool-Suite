@@ -4,7 +4,7 @@ import { promisify } from "util";
 import { existsSync, statSync, createReadStream, unlink } from "fs";
 import https from "https";
 import { GetVideoInfoBody, GetDownloadUrlBody } from "@workspace/api-zod";
-import { getYtDlpBin, withYtClientRotation, hasCookies, getCookiesFlag } from "../lib/ytdlp-manager";
+import { getYtDlpBin, withYtClientRotation, hasCookies, getCookiesFlag, hasInstagramCookies, getInstagramCookiesFlag } from "../lib/ytdlp-manager";
 
 const execAsync = promisify(exec);
 const router = Router();
@@ -474,31 +474,41 @@ async function _instagramFetchCore(videoUrl: string): Promise<InstagramData> {
     }
   }
 
-  // ── Layer 3: yt-dlp fallback ──────────────────────────────────────────────
+  // ── Layer 3: yt-dlp (primary video extractor — try with cookies first) ───────
   if (!videoUrl_) {
-    try {
-      const bin = getYtDlpBin();
-      const { stdout } = await execAsync(
-        `"${bin}" --dump-json --no-playlist --no-warnings --socket-timeout 15 "${videoUrl}"`,
-        { timeout: 25000 }
-      );
-      const info = JSON.parse(stdout.trim().split("\n")[0]);
-      if (info.url) videoUrl_ = info.url;
-      else if (info.formats) {
-        const best = info.formats.filter((f: any) => f.ext === "mp4").slice(-1)[0];
-        if (best?.url) videoUrl_ = best.url;
-      }
-      if (info.thumbnail && !thumbnail) thumbnail = info.thumbnail;
-      if (info.title) title = info.title;
-      if (!uploader && info.uploader) uploader = info.uploader;
-      if (!uploader && info.uploader_id) uploader = info.uploader_id;
-    } catch { /* all layers failed */ }
+    const bin = getYtDlpBin();
+    const cookiesFlag = getInstagramCookiesFlag();
+    const attempts = cookiesFlag
+      ? [`${cookiesFlag}`, ""]          // with cookies first, then without
+      : [""];                           // without cookies only
+
+    for (const cf of attempts) {
+      try {
+        const cmd = `"${bin}" --dump-json --no-playlist --no-warnings --socket-timeout 15 ${cf} "${videoUrl}"`;
+        const { stdout } = await execAsync(cmd, { timeout: 20000 });
+        const info = JSON.parse(stdout.trim().split("\n")[0]);
+        if (info.url) {
+          videoUrl_ = info.url;
+        } else if (info.formats) {
+          const best = (info.formats as any[])
+            .filter((f) => f.ext === "mp4" && f.url)
+            .slice(-1)[0];
+          if (best?.url) videoUrl_ = best.url;
+        }
+        if (info.thumbnail && !thumbnail) thumbnail = info.thumbnail;
+        if (info.title && info.title !== "Instagram Video") title = info.title;
+        if (!uploader && info.uploader) uploader = info.uploader;
+        if (!uploader && info.uploader_id) uploader = info.uploader_id;
+        if (videoUrl_) break;
+      } catch { /* try next attempt */ }
+    }
   }
 
   if (!videoUrl_) {
-    throw new Error(
-      "Instagram: could not extract video. Make sure the post is public and not age-restricted."
-    );
+    const hint = hasInstagramCookies()
+      ? "Post private ho sakta hai ya delete ho gaya ho."
+      : " Settings mein apni Instagram cookies add karo — isse public posts bhi kaam karenge.";
+    throw new Error(`Instagram: video extract nahi ho saka.${hint}`);
   }
 
   return { title, uploader, thumbnail, videoUrl: videoUrl_, duration: null };
