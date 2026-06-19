@@ -144,6 +144,44 @@ export async function autoUpdateYtDlp(): Promise<void> {
   }
 }
 
+// ── IP Spoofing via --xff (X-Forwarded-For) ──────────────────────────────────
+// yt-dlp's --xff flag accepts a 2-letter ISO country code. yt-dlp then picks
+// a random IP from that country's IANA-allocated ranges and injects it as the
+// X-Forwarded-For header in YouTube requests — making each call appear to come
+// from a real residential user in a different country.
+//
+// This bypasses YouTube's per-server-IP rate limits and bot-detection heuristics.
+
+const XFF_COUNTRIES = [
+  "US", // United States  — largest YouTube user base, least suspicious
+  "US", // weighted 2x — US traffic is most common, double the odds
+  "GB", // United Kingdom
+  "DE", // Germany
+  "FR", // France
+  "CA", // Canada
+  "AU", // Australia
+  "JP", // Japan
+  "NL", // Netherlands
+  "BR", // Brazil
+  "MX", // Mexico
+  "IN", // India
+  "KR", // South Korea
+  "SE", // Sweden
+  "PL", // Poland
+];
+
+/** Return the --xff flag with a random country code for yt-dlp */
+export function getXffFlag(): string {
+  const country = XFF_COUNTRIES[Math.floor(Math.random() * XFF_COUNTRIES.length)];
+  logger.debug({ country }, "XFF country rotation");
+  return `--xff "${country}"`;
+}
+
+/** Returns a random country code (for logging/display) */
+export function randomCountryCode(): string {
+  return XFF_COUNTRIES[Math.floor(Math.random() * XFF_COUNTRIES.length)];
+}
+
 // ── YouTube Client Rotation ─────────────────────────────────────────────────
 // Tested 2026-06: ios, android_embedded, android_testsuite, android_music
 // all return full HD (4K/1440p/1080p/720p/480p) without PO token.

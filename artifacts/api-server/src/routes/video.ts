@@ -4,7 +4,7 @@ import { promisify } from "util";
 import { existsSync, statSync, createReadStream, unlink } from "fs";
 import https from "https";
 import { GetVideoInfoBody, GetDownloadUrlBody } from "@workspace/api-zod";
-import { getYtDlpBin, withYtClientRotation, hasCookies, getCookiesFlag, hasInstagramCookies, getInstagramCookiesFlag } from "../lib/ytdlp-manager";
+import { getYtDlpBin, withYtClientRotation, hasCookies, getCookiesFlag, hasInstagramCookies, getInstagramCookiesFlag, getXffFlag } from "../lib/ytdlp-manager";
 
 const execAsync = promisify(exec);
 const router = Router();
@@ -1016,7 +1016,8 @@ router.post("/info", async (req, res) => {
 
   const runInfo = async (clientFlag = "", extraFlags = ""): Promise<string> => {
     const bin = getYtDlpBin();
-    const cmd = `"${bin}" --dump-json ${BASE_FLAGS} ${clientFlag} ${extraFlags} "${url}"`;
+    const xffFlag = isYouTube ? getXffFlag() : "";
+    const cmd = `"${bin}" --dump-json ${BASE_FLAGS} ${clientFlag} ${xffFlag} ${extraFlags} "${url}"`;
     const { stdout } = await execAsync(cmd, { timeout: 35000 });
     return stdout;
   };
@@ -1362,7 +1363,8 @@ router.post("/download", async (req, res) => {
   // Helper: try --get-url with a specific client flag
   const tryGetUrl = async (clientFlag: string) => {
     const bin = getYtDlpBin();
-    const cmd = `"${bin}" -f "${actualFormatId}" --get-url --no-warnings --socket-timeout 20 ${clientFlag} "${url}"`;
+    const xffFlag = isYtDownload ? getXffFlag() : "";
+    const cmd = `"${bin}" -f "${actualFormatId}" --get-url --no-warnings --socket-timeout 20 ${clientFlag} ${xffFlag} "${url}"`;
     const { stdout } = await execAsync(cmd, { timeout: 35000 });
     const urls = stdout.trim().split("\n").filter(Boolean);
     if (!urls.length) throw new Error("No URLs");
@@ -1465,7 +1467,7 @@ router.get("/stream", async (req, res) => {
         const bin = getYtDlpBin();
         const { result: f18out } = await withYtClientRotation(async (flag) => {
           const { stdout } = await execAsync(
-            `"${bin}" -f "18/bestaudio" --get-url --no-warnings --socket-timeout 20 ${flag} "${url}"`,
+            `"${bin}" -f "18/bestaudio" --get-url --no-warnings --socket-timeout 20 ${flag} ${getXffFlag()} "${url}"`,
             { timeout: 25000 }
           );
           if (!stdout.trim()) throw new Error("empty");
@@ -1497,7 +1499,7 @@ router.get("/stream", async (req, res) => {
     } else {
       // Non-YouTube: try direct CDN URL + ffmpeg (faster), fallback to yt-dlp pipe
       try {
-        const cmd = `"${getYtDlpBin()}" -f "${audioFmt}" --get-url --no-warnings --socket-timeout 20 --geo-bypass "${url}"`;
+        const cmd = `"${getYtDlpBin()}" -f "${audioFmt}" --get-url --no-warnings --socket-timeout 20 --geo-bypass --geo-bypass-country US "${url}"`;
         const { stdout } = await execAsync(cmd, { timeout: 35000 });
         const audioUrl = stdout.trim().split("\n")[0];
         // Reject HLS manifests (ffmpeg can't handle them without special auth)
@@ -1602,7 +1604,7 @@ router.get("/stream", async (req, res) => {
           for (const client of getUrlClients) {
             try {
               const { stdout: urlOut } = await execAsync(
-                `"${getYtDlpBin()}" -f "${resolvedFormat}" --get-url --no-warnings --socket-timeout 20 --no-check-formats --extractor-args "youtube:player_client=${client}" "${url}"`,
+                `"${getYtDlpBin()}" -f "${resolvedFormat}" --get-url --no-warnings --socket-timeout 20 --no-check-formats --extractor-args "youtube:player_client=${client}" ${getXffFlag()} "${url}"`,
                 { timeout: 30000 }
               );
               const urls = urlOut.trim().split("\n").filter(Boolean);
@@ -1683,7 +1685,7 @@ router.get("/stream", async (req, res) => {
   try {
     const fmtSelector = `${formatId}+bestaudio/${formatId}/best`;
     const { stdout } = await execAsync(
-      `"${getYtDlpBin()}" -f "${fmtSelector}" --get-url --no-warnings --socket-timeout 20 --geo-bypass "${url}"`,
+      `"${getYtDlpBin()}" -f "${fmtSelector}" --get-url --no-warnings --socket-timeout 20 --geo-bypass --geo-bypass-country US "${url}"`,
       { timeout: 35000 }
     );
     const cdnUrls = stdout.trim().split("\n").filter(Boolean);
