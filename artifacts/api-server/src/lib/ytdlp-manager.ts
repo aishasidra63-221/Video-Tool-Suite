@@ -215,8 +215,16 @@ export async function withYtClientRotation<T>(
       errors.push(`[${client}] ${msg}`);
       logger.warn({ client, err: msg }, "YouTube client failed, trying next");
 
-      const isPermanent = ["Sign in", "log in", "Private", "not available", "removed", "copyright"]
-        .some((s) => msg.toLowerCase().includes(s.toLowerCase()));
+      // Only bail early on errors that NO client can fix (video is gone/private/geo-blocked).
+      // Do NOT include "not available" broadly — "Requested format is not available" is
+      // client-specific and another client (android_embedded, android_testsuite) may succeed.
+      const isPermanent = [
+        "sign in to confirm", "sign in to watch", "log in",
+        "this video is private", "video is private",
+        "this video has been removed", "video has been removed",
+        "copyright", "not available on this app",
+        "no longer supported", "unsupported url",
+      ].some((s) => msg.toLowerCase().includes(s.toLowerCase()));
       if (isPermanent) throw err;
     }
   }
