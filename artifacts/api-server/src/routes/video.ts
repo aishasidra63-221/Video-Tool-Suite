@@ -39,9 +39,15 @@ class Semaphore {
 }
 const igSemaphore = new Semaphore(4); // max 4 concurrent Instagram fetches
 
+// ── YouTube concurrency semaphore ─────────────────────────────────────────────
+// Caps simultaneous yt-dlp info calls — too many parallel calls = server IP flagged
+const ytInfoSemaphore = new Semaphore(4);   // max 4 concurrent info fetches
+const ytStreamSemaphore = new Semaphore(3); // max 3 concurrent stream/downloads
+
 // ── In-flight deduplication (same URL → share one fetch) ─────────────────────
-// Prevents N concurrent users hitting the same URL from making N Instagram requests
+// Prevents N concurrent users hitting the same URL from making N requests
 const igInFlight = new Map<string, Promise<InstagramData>>();
+const ytInFlight = new Map<string, Promise<string>>(); // YouTube info deduplication
 
 const PLATFORM_PATTERNS: Record<string, RegExp[]> = {
   YouTube: [/youtube\.com\/watch/, /youtu\.be\//, /youtube\.com\/shorts\//],
@@ -647,11 +653,18 @@ function detectPlatform(url: string): string {
 /** Base flags always applied to every yt-dlp call */
 const BASE_FLAGS = "--no-playlist --no-warnings --socket-timeout 20 --no-check-formats";
 
-// ── In-memory cache — short TTL for YouTube, longer for Instagram/TikTok ──────
+// ── Random jitter delay — makes requests look less bot-like ──────────────────
+// Spreads traffic so YouTube/Instagram don't see perfectly simultaneous bursts
+function jitter(minMs = 200, maxMs = 900): Promise<void> {
+  const ms = Math.floor(Math.random() * (maxMs - minMs)) + minMs;
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+// ── In-memory cache — longer TTL reduces YouTube hits significantly ───────────
 interface CacheEntry { data: string; expiresAt: number; }
 const infoCache = new Map<string, CacheEntry>();
-const CACHE_TTL_MS        = 5  * 60 * 1000;  // 5 min (YouTube / default)
-const CACHE_TTL_LONG_MS   = 25 * 60 * 1000;  // 25 min (Instagram / Snapchat / TikTok)
+const CACHE_TTL_MS        = 15 * 60 * 1000;  // 15 min YouTube (was 5 min)
+const CACHE_TTL_LONG_MS   = 30 * 60 * 1000;  // 30 min Instagram / Snapchat / TikTok
 
 function getCached(key: string): string | null {
   const entry = infoCache.get(key);
@@ -661,7 +674,8 @@ function getCached(key: string): string | null {
 }
 function setCache(key: string, data: string, ttl = CACHE_TTL_MS) {
   infoCache.set(key, { data, expiresAt: Date.now() + ttl });
-  if (infoCache.size > 500) {
+  // Keep up to 2000 entries — evict oldest when full
+  if (infoCache.size > 2000) {
     const oldest = infoCache.keys().next().value;
     if (oldest) infoCache.delete(oldest);
   }
@@ -1051,25 +1065,42 @@ router.post("/info", async (req, res) => {
       req.log.info("cache hit");
       stdout = cached;
     } else if (isYouTube) {
-      // ── YouTube: smart client rotation ────────────────────────────────────
-      let out: string;
-      try {
-        const { result } = await withYtClientRotation((flag) => runInfo(flag));
-        out = result;
-      } catch (firstErr) {
-        const errMsg = ((firstErr as Error & { stderr?: string }).stderr || (firstErr as Error).message || "");
-        const isBotBlock = errMsg.toLowerCase().includes("sign in") || errMsg.toLowerCase().includes("bot");
-        if (isBotBlock && hasCookies()) {
-          req.log.info("Bot block detected, retrying with cookies");
-          const cookiesFlag = getCookiesFlag();
-          const { result } = await withYtClientRotation((flag) => runInfo(flag, cookiesFlag));
-          out = result;
-        } else {
-          throw firstErr;
-        }
+      // ── YouTube: in-flight dedup + semaphore + client rotation ────────────
+      // Same URL from N concurrent users → 1 yt-dlp call, rest wait for result
+      const existing = ytInFlight.get(url);
+      if (existing) {
+        req.log.info("YouTube in-flight dedup hit");
+        stdout = await existing;
+      } else {
+        const fetchPromise = ytInfoSemaphore.acquire().then(async () => {
+          try {
+            await jitter(150, 700); // random delay — looks less like a bot
+            let out: string;
+            try {
+              const { result } = await withYtClientRotation((flag) => runInfo(flag));
+              out = result;
+            } catch (firstErr) {
+              const errMsg = ((firstErr as Error & { stderr?: string }).stderr || (firstErr as Error).message || "");
+              const isBotBlock = errMsg.toLowerCase().includes("sign in") || errMsg.toLowerCase().includes("bot");
+              if (isBotBlock && hasCookies()) {
+                req.log.info("Bot block detected, retrying with cookies");
+                const cookiesFlag = getCookiesFlag();
+                const { result } = await withYtClientRotation((flag) => runInfo(flag, cookiesFlag));
+                out = result;
+              } else {
+                throw firstErr;
+              }
+            }
+            setCache(url, out);
+            return out;
+          } finally {
+            ytInfoSemaphore.release();
+            ytInFlight.delete(url);
+          }
+        });
+        ytInFlight.set(url, fetchPromise);
+        stdout = await fetchPromise;
       }
-      stdout = out;
-      setCache(url, stdout);
     } else {
       stdout = await withRetry(() => runInfo());
       setCache(url, stdout);
@@ -1530,6 +1561,12 @@ router.get("/stream", async (req, res) => {
         req.on("close", () => proc.kill());
       });
 
+    // Semaphore: cap simultaneous YouTube downloads to avoid server IP flagging
+    await ytStreamSemaphore.acquire();
+    req.on("close", () => ytStreamSemaphore.release());
+
+    await jitter(100, 500); // small random delay before hitting YouTube
+
     // Client rotation: tries android,ios → ios → android → mweb in health-ranked order
     const clients = ["android,ios", "ios", "android", "mweb"] as const;
     let tmpFile: string | null = null;
@@ -1538,7 +1575,12 @@ router.get("/stream", async (req, res) => {
         buildArgs(["--extractor-args", `youtube:player_client=${client}`]),
         `yt-dlp ${client} download`
       );
-      if (tmpFile) { req.log.info({ client }, "YouTube download succeeded"); break; }
+      if (tmpFile) {
+        ytStreamSemaphore.release();
+        req.removeAllListeners("close"); // prevent double release
+        req.log.info({ client }, "YouTube download succeeded");
+        break;
+      }
       req.log.warn({ client }, "Download client failed, trying next");
     }
     streamTempFile(tmpFile ?? `${tmpBase}.mkv`);
