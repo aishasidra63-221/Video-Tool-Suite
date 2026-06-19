@@ -200,9 +200,27 @@ async function snapchatFetch(videoUrl: string): Promise<SnapchatData> {
   }
 
   // ── Title ────────────────────────────────────────────────────────────────
+  // og:title format: "{N} likes | {ACTUAL TITLE} | @user | Posted ... | Snapchat"
+  // We only want the actual title part (between first and second pipe)
   const titleMatch = html.match(/<meta[^>]+property="og:title"[^>]+content="([^"]+)"/) ||
     html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:title"/);
-  const title = titleMatch ? titleMatch[1].replace(/\s*\|\s*Snapchat\s*$/, "").trim() : "Snapchat Video";
+  let title = "Snapchat Video";
+  if (titleMatch) {
+    const raw = titleMatch[1];
+    const parts = raw.split(/\s*\|\s*/);
+    // Parts: ["2 likes", "Actual Title", "@user", "Posted ...", "Snapchat"]
+    // If first part looks like likes/views count, skip it and take next
+    const firstIsCount = /^\d+\s*(like|view|watch|share|comment)/i.test(parts[0]);
+    if (firstIsCount && parts.length > 1) {
+      title = parts[1].trim();
+    } else if (parts.length > 1) {
+      // Remove "Snapchat" suffix from last part, take first meaningful part
+      const filtered = parts.filter((p) => !/^snapchat$/i.test(p.trim()));
+      title = filtered[0].trim();
+    } else {
+      title = raw.replace(/\s*\|\s*Snapchat\s*$/, "").trim();
+    }
+  }
 
   // ── Thumbnail ────────────────────────────────────────────────────────────
   const ogImageMatch = html.match(/<meta[^>]+property="og:image"[^>]+content="([^"]+)"/) ||
