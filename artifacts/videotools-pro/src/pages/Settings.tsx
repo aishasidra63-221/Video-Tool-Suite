@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { Settings2, Download, Shield, Bell, Palette, Info, Cookie, CheckCircle2, XCircle, Loader2, ChevronDown, ChevronUp } from "lucide-react";
+import { Settings2, Download, Shield, Bell, Palette, Info, Cookie, CheckCircle2, XCircle, Loader2, ExternalLink, Trash2, RefreshCw, Lock } from "lucide-react";
 import { useState, useEffect } from "react";
 
 const API_BASE = import.meta.env.BASE_URL?.replace(/\/$/, "") + "/api";
@@ -74,6 +74,36 @@ function Select({
   );
 }
 
+const EXTENSION_URL =
+  "https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc";
+
+const STEPS = [
+  {
+    num: "1",
+    label: 'Install extension',
+    detail: '"Get cookies.txt LOCALLY"',
+    action: { label: "Open Chrome Store →", href: EXTENSION_URL },
+  },
+  {
+    num: "2",
+    label: "Open YouTube & login",
+    detail: "Apne Google account se sign in karo",
+    action: { label: "Open YouTube →", href: "https://youtube.com" },
+  },
+  {
+    num: "3",
+    label: "Export cookies",
+    detail: 'Extension icon click karo → "Export" dabao',
+    action: null,
+  },
+  {
+    num: "4",
+    label: "Paste below & save",
+    detail: "Downloaded file ka poora content yahan paste karo",
+    action: null,
+  },
+];
+
 function CookiesSection() {
   const [hasCookies, setHasCookies] = useState<boolean | null>(null);
   const [cookieText, setCookieText] = useState("");
@@ -81,7 +111,8 @@ function CookiesSection() {
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
-  const [showGuide, setShowGuide] = useState(false);
+
+  const looksValid = cookieText.trim().includes(".youtube.com") || cookieText.trim().startsWith("# Netscape");
 
   useEffect(() => {
     fetch(`${API_BASE}/cookies/status`)
@@ -105,7 +136,7 @@ function CookiesSection() {
         setHasCookies(true);
         setShowInput(false);
         setCookieText("");
-        setMessage({ type: "success", text: "Cookies saved! Age-restricted videos will now work." });
+        setMessage({ type: "success", text: "✅ Cookies save ho gayi! Ab sab videos kaam karenge." });
       } else {
         setMessage({ type: "error", text: d.error || "Failed to save cookies." });
       }
@@ -122,7 +153,8 @@ function CookiesSection() {
     try {
       await fetch(`${API_BASE}/cookies/delete`, { method: "DELETE" });
       setHasCookies(false);
-      setMessage({ type: "success", text: "Cookies removed." });
+      setShowInput(false);
+      setMessage({ type: "success", text: "Cookies hata di gayi." });
     } catch {
       setMessage({ type: "error", text: "Failed to remove cookies." });
     } finally {
@@ -131,107 +163,135 @@ function CookiesSection() {
   };
 
   return (
-    <div className="glass rounded-2xl px-6 py-4 space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="glass rounded-2xl overflow-hidden">
+      {/* Header */}
+      <div className="px-6 py-4 flex items-center justify-between border-b border-white/10">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-yellow-500/15 flex items-center justify-center shrink-0">
-            <Cookie className="w-4 h-4 text-yellow-400" />
+          <div className="w-9 h-9 rounded-xl bg-yellow-500/15 flex items-center justify-center shrink-0">
+            <Lock className="w-4 h-4 text-yellow-400" />
           </div>
           <div>
-            <p className="font-semibold text-white text-sm">YouTube Cookies</p>
+            <p className="font-semibold text-white text-sm">YouTube Unlock</p>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Unlock age-restricted & bot-blocked videos
+              Bot-blocked &amp; age-restricted videos ke liye
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          {hasCookies === null ? (
-            <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
-          ) : hasCookies ? (
-            <span className="flex items-center gap-1.5 text-xs text-green-400 font-medium bg-green-500/10 px-2.5 py-1 rounded-full">
-              <CheckCircle2 className="w-3.5 h-3.5" /> Active
-            </span>
-          ) : (
-            <span className="flex items-center gap-1.5 text-xs text-muted-foreground bg-white/5 px-2.5 py-1 rounded-full">
-              <XCircle className="w-3.5 h-3.5" /> Not set
-            </span>
-          )}
-        </div>
+        {hasCookies === null ? (
+          <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
+        ) : hasCookies ? (
+          <span className="flex items-center gap-1.5 text-xs text-green-400 font-semibold bg-green-500/10 px-3 py-1 rounded-full border border-green-500/20">
+            <CheckCircle2 className="w-3.5 h-3.5" /> Active
+          </span>
+        ) : (
+          <span className="flex items-center gap-1.5 text-xs text-muted-foreground bg-white/5 px-3 py-1 rounded-full border border-white/10">
+            <XCircle className="w-3.5 h-3.5" /> Not set
+          </span>
+        )}
       </div>
 
-      {/* Guide toggle */}
-      <button
-        onClick={() => setShowGuide(!showGuide)}
-        className="w-full flex items-center justify-between text-xs text-primary/80 hover:text-primary transition-colors py-1"
-      >
-        <span>How to get YouTube cookies?</span>
-        {showGuide ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-      </button>
-
-      {showGuide && (
-        <div className="bg-white/5 rounded-xl p-4 text-xs text-muted-foreground space-y-2 leading-relaxed">
-          <p className="text-white font-medium">Step-by-step guide:</p>
-          <ol className="list-decimal list-inside space-y-1.5">
-            <li>Chrome mein <strong className="text-white">YouTube.com</strong> par jao aur login karo</li>
-            <li>Chrome Extension install karo: <strong className="text-white">"Get cookies.txt LOCALLY"</strong></li>
-            <li>YouTube tab par extension ka icon click karo</li>
-            <li><strong className="text-white">"Export"</strong> button dabao — cookies.txt download hogi</li>
-            <li>File ka poora content copy karo aur neeche paste karo</li>
-          </ol>
-          <p className="text-yellow-400/80 mt-2">⚠️ Sirf apne personal account ki cookies use karo.</p>
-        </div>
-      )}
-
+      {/* Message */}
       {message && (
-        <div className={`flex items-center gap-2 text-xs px-3 py-2 rounded-lg ${
-          message.type === "success" ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"
+        <div className={`mx-6 mt-4 flex items-center gap-2 text-xs px-3 py-2.5 rounded-xl ${
+          message.type === "success" ? "bg-green-500/10 text-green-400 border border-green-500/20" : "bg-red-500/10 text-red-400 border border-red-500/20"
         }`}>
           {message.type === "success" ? <CheckCircle2 className="w-3.5 h-3.5 shrink-0" /> : <XCircle className="w-3.5 h-3.5 shrink-0" />}
           {message.text}
         </div>
       )}
 
-      <div className="flex gap-2">
-        {!hasCookies ? (
-          <button
-            onClick={() => setShowInput(!showInput)}
-            className="flex-1 text-xs bg-primary/20 hover:bg-primary/30 text-primary border border-primary/30 rounded-lg px-4 py-2 transition-colors font-medium"
-          >
-            {showInput ? "Cancel" : "+ Add Cookies"}
-          </button>
-        ) : (
-          <>
-            <button
-              onClick={() => setShowInput(!showInput)}
-              className="flex-1 text-xs bg-white/10 hover:bg-white/15 text-white border border-white/20 rounded-lg px-4 py-2 transition-colors font-medium"
-            >
-              {showInput ? "Cancel" : "Update Cookies"}
-            </button>
-            <button
-              onClick={removeCookies}
-              disabled={deleting}
-              className="text-xs bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 rounded-lg px-4 py-2 transition-colors font-medium disabled:opacity-50"
-            >
-              {deleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Remove"}
-            </button>
-          </>
-        )}
-      </div>
+      {/* Steps guide — always visible when not set */}
+      {!hasCookies && (
+        <div className="px-6 py-4 space-y-3">
+          <p className="text-xs font-semibold text-white/60 uppercase tracking-wider">Sirf 4 steps — 1 minute</p>
+          <div className="space-y-2">
+            {STEPS.map((s) => (
+              <div key={s.num} className="flex items-start gap-3 bg-white/[0.03] hover:bg-white/[0.06] rounded-xl px-4 py-3 transition-colors group">
+                <span className="flex-shrink-0 w-6 h-6 rounded-full bg-primary/20 text-primary text-xs font-bold flex items-center justify-center mt-0.5">
+                  {s.num}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-white font-medium">{s.label}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">{s.detail}</p>
+                </div>
+                {s.action && (
+                  <a
+                    href={s.action.href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-shrink-0 flex items-center gap-1 text-xs text-primary font-semibold hover:text-primary/80 transition-colors whitespace-nowrap"
+                  >
+                    {s.action.label}
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
-      {showInput && (
-        <div className="space-y-2">
+      {/* Paste area */}
+      {(!hasCookies || showInput) && (
+        <div className="px-6 pb-4 space-y-2">
           <textarea
             value={cookieText}
             onChange={(e) => setCookieText(e.target.value)}
-            placeholder="# Netscape HTTP Cookie File&#10;# cookies.txt content yahan paste karo..."
-            className="w-full h-32 text-xs font-mono bg-black/40 border border-white/20 rounded-xl px-3 py-3 text-white/80 placeholder-white/20 focus:outline-none focus:ring-2 focus:ring-primary/40 resize-none"
+            placeholder={"# Netscape HTTP Cookie File\n# cookies.txt ka content yahan paste karo (Step 4)"}
+            className={`w-full h-28 text-xs font-mono bg-black/40 border rounded-xl px-3 py-3 text-white/80 placeholder-white/20 focus:outline-none focus:ring-2 resize-none transition-colors ${
+              cookieText && looksValid
+                ? "border-green-500/40 focus:ring-green-500/30"
+                : cookieText && !looksValid
+                ? "border-red-500/30 focus:ring-red-500/20"
+                : "border-white/15 focus:ring-primary/40"
+            }`}
           />
+          {cookieText && !looksValid && (
+            <p className="text-xs text-red-400/80 flex items-center gap-1">
+              <XCircle className="w-3 h-3" /> Yeh valid cookies.txt nahi lagta — dobara export karo
+            </p>
+          )}
+          {cookieText && looksValid && (
+            <p className="text-xs text-green-400/80 flex items-center gap-1">
+              <CheckCircle2 className="w-3 h-3" /> Valid cookies detect hui — save kar sakte ho
+            </p>
+          )}
           <button
             onClick={saveCookies}
-            disabled={saving || !cookieText.trim()}
-            className="w-full text-sm bg-primary hover:bg-primary/90 text-white rounded-xl px-4 py-2.5 font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+            disabled={saving || !cookieText.trim() || !looksValid}
+            className="w-full text-sm bg-primary hover:bg-primary/90 text-white rounded-xl px-4 py-2.5 font-semibold transition-colors disabled:opacity-40 flex items-center justify-center gap-2"
           >
-            {saving ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving...</> : "Save Cookies"}
+            {saving ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving...</> : "Save Cookies & Unlock All Videos"}
+          </button>
+        </div>
+      )}
+
+      {/* Active state actions */}
+      {hasCookies && !showInput && (
+        <div className="px-6 pb-4 flex gap-2">
+          <button
+            onClick={() => { setShowInput(true); setMessage(null); }}
+            className="flex-1 flex items-center justify-center gap-1.5 text-xs bg-white/8 hover:bg-white/12 text-white/80 border border-white/15 rounded-xl px-4 py-2.5 transition-colors font-medium"
+          >
+            <RefreshCw className="w-3.5 h-3.5" /> Update Cookies
+          </button>
+          <button
+            onClick={removeCookies}
+            disabled={deleting}
+            className="flex items-center gap-1.5 text-xs bg-red-500/8 hover:bg-red-500/15 text-red-400 border border-red-500/20 rounded-xl px-4 py-2.5 transition-colors font-medium disabled:opacity-50"
+          >
+            {deleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+            Remove
+          </button>
+        </div>
+      )}
+      {hasCookies && showInput && (
+        <div className="px-6 pb-2">
+          <button
+            onClick={() => { setShowInput(false); setCookieText(""); }}
+            className="text-xs text-muted-foreground hover:text-white transition-colors"
+          >
+            Cancel
           </button>
         </div>
       )}
