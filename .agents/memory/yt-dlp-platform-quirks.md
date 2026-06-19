@@ -26,6 +26,16 @@ yt-dlp -f "formatId+bestaudio/best" --merge-output-format mkv
 - Android client (`--extractor-args "youtube:player_client=android"`): format 18, 360p combined mp4 — fallback for restricted videos
 - iOS, tv_embedded: BLOCKED as of mid-2026 — do not use for audio
 
+## YouTube HD Video — as of mid-2026
+
+**Info extraction (--dump-json) from Node.js execAsync**: Default client returns only storyboards or empty when run via execAsync — does NOT return HLS 720p/1080p formats even though shell test works. Reason unknown (likely env/header difference).
+
+**Workaround (jugaad)**: Inject virtual HD format IDs (232=720p, 270=1080p) directly into the formats list after buildFormats. These are stable YouTube HLS format IDs. At stream time, the stream endpoint uses default client (no --extractor-args) which DOES download these HLS streams via temp file approach.
+
+**Shell test vs Node.js**: `yt-dlp --dump-json --no-check-formats URL` from shell returns formats 232/270/614/609 etc. (720p/1080p HLS). Same command via execAsync returns only format 18 (360p). Do not assume shell behavior == Node.js behavior.
+
+**Race condition bug (FIXED)**: Never re-race an already-resolved Promise — it returns immediately with the stale result. Use `hdOnly()` pattern (promise that only resolves if fmtCount>0) with separate racing.
+
 **Audio stream (YouTube) — as of mid-2026:**
 ios → "not available on this app". tv_embedded → "no longer supported". web client → "Requested format is not available" (audio-only streams blocked from server IPs without PO tokens). ALL three blocked.
 

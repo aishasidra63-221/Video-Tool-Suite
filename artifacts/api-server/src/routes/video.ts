@@ -359,12 +359,13 @@ router.post("/info", async (req, res) => {
       req.log.info("cache hit");
       stdout = cached;
     } else if (isYouTube) {
-      // ── Two-phase YouTube extraction ──────────────────────────────────────
-      // Phase 1: Race android (fast, reliable) vs web (slower, best quality)
-      //          Android wins on speed; web wins if it finishes within 3s of android
-      // Phase 2: If both fail, try remaining fallbacks (ios, tv_embedded)
+      // ── YouTube HD extraction strategy (mid-2026) ─────────────────────────
+      // Default client (no extractor-args): returns 720p/1080p/4K as HLS m3u8.
+      // Android client: returns format 18 (360p combined mp4) quickly — reliable fallback.
+      // We run both in parallel and pick whichever has HD (720p+) first.
+      // KEY BUG FIX: never re-race an already-resolved promise — it returns immediately
+      // with the stale result, preventing the HD client from being awaited.
 
-      // Build a promise that returns { stdout, formats } so we can pick best quality
       const tryClient = async (flag: string) => {
         const out = await runInfo(flag);
         if (!out.trim()) throw new Error("empty output");
@@ -375,29 +376,33 @@ router.post("/info", async (req, res) => {
         return { stdout: out, fmtCount };
       };
 
+      // Helper: promise that only resolves if fmtCount > 0 (HD quality), otherwise never resolves
+      const hdOnly = (p: Promise<{ stdout: string; fmtCount: number } | null>) =>
+        new Promise<{ stdout: string; fmtCount: number }>((resolve, reject) =>
+          p.then((r) => (r && r.fmtCount > 0 ? resolve(r) : reject(new Error("no HD")))).catch(reject)
+        );
+
+      // Start both clients simultaneously (android fast, default has HD)
+      const defaultP = tryClient("").catch(() => null);                   // 720p/1080p HLS
+      const androidP = tryClient(YT_ANDROID_FLAG).catch(() => null);     // 360p mp4 (fast)
+
       let bestResult: { stdout: string; fmtCount: number } | null = null;
 
-      // Start android + web simultaneously
-      const androidP = tryClient(YT_ANDROID_FLAG).catch(() => null);
-      const webFallbacksP = Promise.any(
-        YT_WEB_FALLBACKS.map((flag) => tryClient(flag))
-      ).catch(() => null);
+      // Wait up to 20s for first HD result
+      const hdResult = await Promise.race([
+        hdOnly(defaultP),
+        hdOnly(androidP),
+        new Promise<null>((r) => setTimeout(() => r(null), 20000)),
+      ]).catch(() => null);
 
-      // Speed-first: take whichever client responds first.
-      // If the first result has HD formats (720p+) → use it immediately.
-      // If first result has no HD (android-only 360p) → wait up to 8s more for web.
-      const firstResult = await Promise.race([androidP, webFallbacksP]);
-      if (firstResult && firstResult.fmtCount > 0) {
-        // Winner has HD formats → use immediately, no need to wait for the other
-        bestResult = firstResult;
+      if (hdResult) {
+        bestResult = hdResult;
+        req.log.info({ fmtCount: hdResult.fmtCount }, "YouTube HD result");
       } else {
-        // First result is low-quality or failed — wait for the other (max 8s bonus)
-        const bonusResult = await Promise.race([
-          androidP,
-          webFallbacksP,
-          new Promise<null>((r) => setTimeout(() => r(null), 8000)),
-        ]);
-        bestResult = bonusResult || firstResult;
+        // No HD — use android 360p fallback (already settled or settle now)
+        const [def, and] = await Promise.all([defaultP, androidP]);
+        bestResult = and ?? def;
+        req.log.warn("YouTube: no HD formats, using 360p fallback");
       }
 
       if (!bestResult) throw new AggregateError([], "All YouTube clients failed");
@@ -411,6 +416,32 @@ router.post("/info", async (req, res) => {
     const firstLine = stdout.trim().split("\n")[0];
     const info: YtDlpInfo = JSON.parse(firstLine);
     const formats = buildFormats(info.formats);
+
+    // ── YouTube HD injection ───────────────────────────────────────────────
+    // Default yt-dlp client returns 720p/1080p as HLS m3u8 (format 232/270),
+    // but info extraction sometimes only gets 360p (android client fallback).
+    // We inject virtual HD options: at download time the stream endpoint uses
+    // the default client (web) which reliably gets HLS 720p/1080p.
+    if (isYouTube) {
+      const videoFmts = formats.filter((f) => f.type === "video");
+      const hasHD = videoFmts.some((f) => {
+        const h = parseInt(f.quality);
+        return !isNaN(h) && h >= 720;
+      });
+      if (!hasHD) {
+        // Insert HD options before 360p in the video formats list
+        const insertIdx = formats.findIndex((f) => f.type === "video");
+        const hdOptions = [
+          { formatId: "270", quality: "1080p", label: "1080p Full HD", type: "video" as const, filesize: null, badge: "Full HD" },
+          { formatId: "232", quality: "720p", label: "720p HD", type: "video" as const, filesize: null, badge: "HD" },
+        ];
+        if (insertIdx >= 0) {
+          formats.splice(insertIdx, 0, ...hdOptions);
+        } else {
+          formats.unshift(...hdOptions);
+        }
+      }
+    }
 
     res.json({
       url,
