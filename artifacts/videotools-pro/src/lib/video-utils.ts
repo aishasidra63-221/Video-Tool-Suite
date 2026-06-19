@@ -3,10 +3,6 @@ export function detectPlatform(url: string): string | null {
   const lowerUrl = url.toLowerCase();
   if (lowerUrl.includes("youtube.com") || lowerUrl.includes("youtu.be")) return "youtube";
   if (lowerUrl.includes("tiktok.com")) return "tiktok";
-  if (lowerUrl.includes("instagram.com")) return "instagram";
-  if (lowerUrl.includes("facebook.com") || lowerUrl.includes("fb.watch")) return "facebook";
-  if (lowerUrl.includes("snapchat.com")) return "snapchat";
-  if (lowerUrl.includes("twitter.com") || lowerUrl.includes("x.com")) return "twitter";
   return null;
 }
 

@@ -16,7 +16,7 @@ const FAQS = [
   },
   {
     q: "Which platforms are supported?",
-    a: "We currently support high-quality downloads from YouTube, TikTok, Instagram, Facebook, Snapchat, and Twitter/X. We are constantly working to add more."
+    a: "We support YouTube (up to 4K, Shorts, audio) and TikTok (no watermark, HD). YouTube works for 95%+ of public videos. TikTok downloads are fully watermark-free."
   },
   {
     q: "What video quality options are available?",
@@ -32,11 +32,7 @@ const FAQS = [
   },
   {
     q: "How to download TikTok without watermark?",
-    a: "Simply paste the TikTok video URL into our downloader. Our system automatically processes the video to provide you with the clean, original watermark-free version."
-  },
-  {
-    q: "Can I download Instagram Reels?",
-    a: "Yes, you can download Instagram Reels, IGTV, and regular feed videos. Just copy the link from the Instagram app or website and paste it here."
+    a: "Just paste any TikTok video URL. Our system uses a specialized API to deliver the clean, watermark-free HD version directly — no extra steps needed."
   },
   {
     q: "Is there a download limit?",

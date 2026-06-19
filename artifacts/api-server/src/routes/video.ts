@@ -2,6 +2,7 @@ import { Router } from "express";
 import { exec, spawn } from "child_process";
 import { promisify } from "util";
 import { existsSync, statSync, createReadStream, unlink } from "fs";
+import https from "https";
 import { GetVideoInfoBody, GetDownloadUrlBody } from "@workspace/api-zod";
 import { getYtDlpBin, withYtClientRotation, hasCookies, getCookiesFlag } from "../lib/ytdlp-manager";
 
@@ -11,11 +12,58 @@ const router = Router();
 const PLATFORM_PATTERNS: Record<string, RegExp[]> = {
   YouTube: [/youtube\.com\/watch/, /youtu\.be\//, /youtube\.com\/shorts\//],
   TikTok: [/tiktok\.com\//],
-  Instagram: [/instagram\.com\/(reel|p|stories|tv)\//],
-  Facebook: [/facebook\.com\//, /fb\.watch\//],
-  Snapchat: [/snapchat\.com\/spotlight\//],
-  "Twitter/X": [/twitter\.com\//, /x\.com\//],
 };
+
+// ── TikWM API — fetches TikTok video info without watermark ──────────────────
+// Free tier: 5000 req/day, 1 req/sec, no API key needed
+function tikwmFetch(videoUrl: string): Promise<TikWMData> {
+  return new Promise((resolve, reject) => {
+    const body = `url=${encodeURIComponent(videoUrl)}&hd=1`;
+    const options = {
+      hostname: "www.tikwm.com",
+      path: "/api/",
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Content-Length": Buffer.byteLength(body),
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Referer": "https://www.tikwm.com/",
+        "Origin": "https://www.tikwm.com",
+        "Accept": "application/json, text/plain, */*",
+      },
+    };
+    const req = https.request(options, (res) => {
+      let data = "";
+      res.on("data", (chunk) => (data += chunk));
+      res.on("end", () => {
+        try {
+          const json = JSON.parse(data);
+          if (json.code !== 0) reject(new Error(json.msg || "TikWM error"));
+          else resolve(json.data as TikWMData);
+        } catch {
+          reject(new Error("TikWM: invalid JSON"));
+        }
+      });
+    });
+    req.on("error", reject);
+    req.setTimeout(20000, () => { req.destroy(); reject(new Error("TikWM timeout")); });
+    req.write(body);
+    req.end();
+  });
+}
+
+interface TikWMData {
+  id: string;
+  title: string;
+  cover: string;
+  duration: number;
+  play: string;
+  hdplay: string;
+  wmplay: string;
+  music: string;
+  music_info?: { title?: string; author?: string };
+  author?: { nickname?: string; avatar?: string };
+}
 
 function detectPlatform(url: string): string {
   for (const [platform, patterns] of Object.entries(PLATFORM_PATTERNS)) {
@@ -321,13 +369,13 @@ router.post("/info", async (req, res) => {
   const platform = detectPlatform(url);
   if (platform === "Unknown") {
     res.status(400).json({
-      error:
-        "Unsupported platform. We support YouTube, TikTok, Instagram, Facebook, Snapchat and Twitter/X.",
+      error: "Unsupported platform. We support YouTube and TikTok.",
     });
     return;
   }
 
   const isYouTube = platform === "YouTube";
+  const isTikTok = platform === "TikTok";
 
   const runInfo = async (clientFlag = "", extraFlags = ""): Promise<string> => {
     const bin = getYtDlpBin();
@@ -337,6 +385,31 @@ router.post("/info", async (req, res) => {
   };
 
   try {
+    // ── TikTok: use TikWM API (no watermark, no server-IP blocks) ────────────
+    if (isTikTok) {
+      const cached = getCached(url);
+      let tk: TikWMData;
+      if (cached) {
+        req.log.info("cache hit (tiktok)");
+        tk = JSON.parse(cached);
+      } else {
+        tk = await tikwmFetch(url);
+        setCache(url, JSON.stringify(tk));
+      }
+      const formats: Array<{
+        formatId: string; quality: string; label: string;
+        type: "video" | "audio"; filesize: number | null; badge: string | null;
+      }> = [];
+      if (tk.hdplay) formats.push({ formatId: "tiktok:hd", quality: "HD", label: "HD Video (no watermark)", type: "video", filesize: null, badge: "HD" });
+      if (tk.play)   formats.push({ formatId: "tiktok:sd", quality: "SD", label: "Standard (no watermark)", type: "video", filesize: null, badge: null });
+      if (tk.music)  formats.push({ formatId: "tiktok:audio", quality: "audio", label: "Audio (MP3)", type: "audio", filesize: null, badge: null });
+      return res.json({
+        url, title: tk.title || "TikTok Video",
+        thumbnail: tk.cover || null, duration: tk.duration || null,
+        platform, formats,
+      });
+    }
+
     // ── Check cache first ────────────────────────────────────────────────────
     let stdout: string;
     const cached = getCached(url);
@@ -345,10 +418,6 @@ router.post("/info", async (req, res) => {
       stdout = cached;
     } else if (isYouTube) {
       // ── YouTube: smart client rotation ────────────────────────────────────
-      // withYtClientRotation tries clients in health-ranked order:
-      // android,ios → ios → android → mweb
-      // Failed clients get a 5-min cooldown; successful ones get priority.
-      // If bot-check error and cookies available, retry with --cookies flag.
       let out: string;
       try {
         const { result } = await withYtClientRotation((flag) => runInfo(flag));
@@ -385,7 +454,6 @@ router.post("/info", async (req, res) => {
       formats,
     });
   } catch (err) {
-    // Promise.any() throws AggregateError when ALL clients fail — collect all stderr messages
     let stderr: string;
     if (err instanceof AggregateError) {
       stderr = err.errors
@@ -396,23 +464,23 @@ router.post("/info", async (req, res) => {
       const error = err as Error & { stderr?: string };
       stderr = (error.stderr || error.message || "").slice(0, 400);
     }
-    req.log.error({ err: stderr }, "yt-dlp info failed");
+    req.log.error({ err: stderr }, "video info failed");
 
+    if (isTikTok) {
+      const hint = stderr.includes("rate") ? "Rate limit. 1 second baad try karo." : "TikTok video load nahi hua. URL check karo.";
+      return res.status(422).json({ error: hint });
+    }
     if (stderr.includes("Sign in") || stderr.includes("log in") || stderr.includes("login") || stderr.includes("bot")) {
       const cookiesHint = hasCookies() ? "" : " Settings mein apni YouTube cookies add karo — isse yeh videos bhi kaam karenge.";
-      res.status(422).json({ error: `YouTube is verifying this video and blocking server access.${cookiesHint}`, code: "BOT_BLOCK" });
+      return res.status(422).json({ error: `YouTube is verifying this video and blocking server access.${cookiesHint}`, code: "BOT_BLOCK" });
     } else if (stderr.includes("Private") || stderr.includes("not available") || stderr.includes("unavailable")) {
-      res.status(422).json({ error: "This video is private or unavailable." });
+      return res.status(422).json({ error: "This video is private or unavailable." });
     } else if (stderr.includes("verify") || stderr.includes("not available on this app") || stderr.includes("No video formats found")) {
-      res.status(422).json({ error: "YouTube is blocking this video. Try a different video or add cookies in Settings." });
+      return res.status(422).json({ error: "YouTube is blocking this video. Try a different video or add cookies in Settings." });
     } else if (stderr.includes("unsupported URL")) {
-      res.status(422).json({ error: "URL not supported. Please use a direct video link." });
-    } else if (platform === "TikTok") {
-      res.status(422).json({
-        error: "TikTok restricts access from server IPs. Try a direct TikTok link or another platform.",
-      });
+      return res.status(422).json({ error: "URL not supported. Please use a direct video link." });
     } else {
-      res.status(422).json({
+      return res.status(422).json({
         error: "Unable to fetch video info. The video may be private, age-restricted, or removed.",
       });
     }
@@ -434,6 +502,42 @@ router.post("/download", async (req, res) => {
   if (!isValidUrl(url)) {
     res.status(400).json({ error: "Invalid URL." });
     return;
+  }
+
+  // ── TikTok: format IDs are "tiktok:hd", "tiktok:sd", "tiktok:audio"
+  // We re-fetch from TikWM cache to get the direct CDN URL
+  if (/tiktok\.com\//.test(url)) {
+    try {
+      const cached = getCached(url);
+      let tk: TikWMData;
+      if (cached) {
+        tk = JSON.parse(cached);
+      } else {
+        tk = await tikwmFetch(url);
+        setCache(url, JSON.stringify(tk));
+      }
+      let directUrl: string;
+      let filename: string;
+      if (formatId === "tiktok:hd") {
+        directUrl = tk.hdplay || tk.play;
+        filename = "tiktok_hd.mp4";
+      } else if (formatId === "tiktok:sd") {
+        directUrl = tk.play;
+        filename = "tiktok.mp4";
+      } else {
+        directUrl = tk.music;
+        filename = "tiktok_audio.mp3";
+      }
+      if (!directUrl) {
+        res.status(422).json({ error: "TikTok download URL not available." });
+        return;
+      }
+      res.json({ downloadUrl: directUrl, filename });
+      return;
+    } catch (err) {
+      res.status(422).json({ error: "Failed to get TikTok download URL." });
+      return;
+    }
   }
 
   // Parse audio flag from formatId: "233:audio:320" or "bestaudio:audio:192"

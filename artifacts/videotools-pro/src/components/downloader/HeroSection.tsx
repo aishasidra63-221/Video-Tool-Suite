@@ -104,7 +104,7 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
-              placeholder="Paste video URL here... (YouTube, TikTok, Instagram...)"
+              placeholder="Paste YouTube or TikTok URL here..."
               className={`w-full bg-black/50 border-2 rounded-2xl px-4 py-5 md:py-6 text-white placeholder:text-white/40 focus:outline-none transition-all text-lg shadow-inner pl-6 ${url ? 'pr-14' : 'pr-28'} ${
                 showSuccess ? 'border-green-500/50 focus:border-green-500' :
                 showError   ? 'border-red-500/50 focus:border-red-500' :
@@ -154,7 +154,7 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
         {showError && (
           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="mt-3 text-left px-2 flex items-center gap-2 text-red-400">
             <AlertCircle className="w-4 h-4" />
-            <span className="text-sm">Please enter a valid supported URL (YouTube, TikTok, Instagram, Facebook, Snapchat, Twitter/X)</span>
+            <span className="text-sm">Please enter a valid YouTube or TikTok URL</span>
           </motion.div>
         )}
         {showSuccess && (
