@@ -63,6 +63,27 @@ function setCache(key: string, data: string) {
   }
 }
 
+// Retry transient errors (network/timeout) but not permanent ones (private, removed, login-wall)
+const PERMANENT_ERRORS = ["Sign in", "log in", "login", "Private", "not available", "unavailable",
+  "removed", "copyright", "unsupported URL", "not available on this app", "no longer supported"];
+function isTransientError(msg: string): boolean {
+  return !PERMANENT_ERRORS.some((s) => msg.toLowerCase().includes(s.toLowerCase()));
+}
+async function withRetry<T>(fn: () => Promise<T>, retries = 2, delayMs = 1500): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      const msg = ((err as Error & { stderr?: string }).stderr || (err as Error).message || "");
+      if (!isTransientError(msg)) throw err; // permanent — don't retry
+      if (attempt < retries) await new Promise((r) => setTimeout(r, delayMs * (attempt + 1)));
+    }
+  }
+  throw lastErr;
+}
+
 function isValidUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
@@ -376,7 +397,7 @@ router.post("/info", async (req, res) => {
       stdout = bestResult.stdout;
       setCache(url, stdout);
     } else {
-      stdout = await runInfo();
+      stdout = await withRetry(() => runInfo());
       setCache(url, stdout);
     }
 

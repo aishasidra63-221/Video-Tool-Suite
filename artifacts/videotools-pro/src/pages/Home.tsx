@@ -11,10 +11,12 @@ export default function Home() {
   const getVideoInfo = useGetVideoInfo();
   const [videoData, setVideoData] = useState<VideoInfo | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [lastUrl, setLastUrl] = useState<string>("");
 
-  const handleSubmit = (url: string) => {
+  const fetchInfo = (url: string) => {
     setVideoData(null);
     setErrorMsg(null);
+    setLastUrl(url);
 
     getVideoInfo.mutate(
       { data: { url } },
@@ -35,11 +37,12 @@ export default function Home() {
   const handleReset = () => {
     setVideoData(null);
     setErrorMsg(null);
+    setLastUrl("");
   };
 
   return (
     <div className="flex flex-col w-full">
-      <HeroSection onSubmit={handleSubmit} isPending={getVideoInfo.isPending} />
+      <HeroSection onSubmit={fetchInfo} isPending={getVideoInfo.isPending} />
 
       <div id="result-section">
         <ResultSection
@@ -47,6 +50,7 @@ export default function Home() {
           error={errorMsg}
           isLoading={getVideoInfo.isPending}
           onReset={handleReset}
+          onRetry={lastUrl ? () => fetchInfo(lastUrl) : undefined}
         />
       </div>
 

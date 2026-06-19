@@ -11,12 +11,14 @@ export function ResultSection({
   info, 
   error, 
   isLoading, 
-  onReset 
+  onReset,
+  onRetry,
 }: { 
   info: VideoInfo | null, 
   error: string | null,
   isLoading: boolean,
-  onReset: () => void
+  onReset: () => void,
+  onRetry?: () => void,
 }) {
   const [activeTab, setActiveTab] = useState<'video' | 'audio'>('video');
   const getDownloadUrl = useGetDownloadUrl();
@@ -71,15 +73,25 @@ export function ResultSection({
             className="glass border-red-500/30 bg-red-500/5 rounded-3xl p-8 flex flex-col items-center justify-center text-center shadow-xl"
           >
             <AlertTriangle className="w-16 h-16 text-red-500 mb-4" />
-            <h3 className="text-2xl font-bold text-white mb-2">Oops! Something went wrong</h3>
+            <h3 className="text-2xl font-bold text-white mb-2">Something went wrong</h3>
             <p className="text-red-200 mb-8 max-w-md">{error}</p>
-            <button 
-              onClick={onReset}
-              className="flex items-center gap-2 bg-white/10 hover:bg-white/20 text-white px-6 py-3 rounded-xl font-medium transition-colors"
-            >
-              <RefreshCw className="w-5 h-5" />
-              Try Another URL
-            </button>
+            <div className="flex items-center gap-3 flex-wrap justify-center">
+              {onRetry && (
+                <button 
+                  onClick={onRetry}
+                  className="flex items-center gap-2 bg-primary/80 hover:bg-primary text-white px-6 py-3 rounded-xl font-semibold transition-colors shadow"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                  Try Again
+                </button>
+              )}
+              <button 
+                onClick={onReset}
+                className="flex items-center gap-2 bg-white/10 hover:bg-white/20 text-white px-6 py-3 rounded-xl font-medium transition-colors"
+              >
+                Try Another URL
+              </button>
+            </div>
           </motion.div>
         )}
 
