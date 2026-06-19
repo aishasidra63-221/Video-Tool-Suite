@@ -80,4 +80,11 @@ export const PLATFORMS = [
     hoverBorder: "hover:border-[#69C9D0]/60",
     supports: "No Watermark, HD, Audio",
   },
+  {
+    id: "snapchat",
+    name: "Snapchat",
+    IconComponent: SnapchatIcon,
+    hoverBorder: "hover:border-[#FFFC00]/60",
+    supports: "Spotlight, Stories",
+  },
 ];

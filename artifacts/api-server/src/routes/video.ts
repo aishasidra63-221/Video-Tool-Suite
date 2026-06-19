@@ -12,6 +12,7 @@ const router = Router();
 const PLATFORM_PATTERNS: Record<string, RegExp[]> = {
   YouTube: [/youtube\.com\/watch/, /youtu\.be\//, /youtube\.com\/shorts\//],
   TikTok: [/tiktok\.com\//],
+  Snapchat: [/snapchat\.com\/spotlight\//, /snapchat\.com\/add\//, /snapchat\.com\/p\//],
 };
 
 // ── TikTok Multi-API Fallback System ─────────────────────────────────────────
