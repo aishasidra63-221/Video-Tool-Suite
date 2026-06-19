@@ -3,53 +3,54 @@ import { useGetDownloadUrl } from "@workspace/api-client-react";
 import { formatDuration, formatBytes, detectPlatform } from "@/lib/video-utils";
 import { PLATFORMS } from "./platform-icons";
 import { motion, AnimatePresence } from "framer-motion";
-import { Download, Film, Music, Image as ImageIcon, AlertTriangle, RefreshCw } from "lucide-react";
+import { Download, Film, Music, AlertTriangle, RefreshCw, ImageDown } from "lucide-react";
 import { VideoInfo } from "@workspace/api-client-react/src/generated/api.schemas";
 
-
-export function ResultSection({ 
-  info, 
-  error, 
-  isLoading, 
+export function ResultSection({
+  info,
+  error,
+  isLoading,
   onReset,
   onRetry,
-}: { 
-  info: VideoInfo | null, 
-  error: string | null,
-  isLoading: boolean,
-  onReset: () => void,
-  onRetry?: () => void,
+}: {
+  info: VideoInfo | null;
+  error: string | null;
+  isLoading: boolean;
+  onReset: () => void;
+  onRetry?: () => void;
 }) {
-  const [activeTab, setActiveTab] = useState<'video' | 'audio'>('video');
+  const [activeTab, setActiveTab] = useState<"video" | "audio">("video");
   const [downloadingFormatId, setDownloadingFormatId] = useState<string | null>(null);
   const getDownloadUrl = useGetDownloadUrl();
 
   const handleDownload = (url: string, formatId: string) => {
     if (downloadingFormatId) return;
     setDownloadingFormatId(formatId);
-    getDownloadUrl.mutate({ data: { url, formatId } }, {
-      onSuccess: (data) => {
-        const a = document.createElement('a');
-        a.href = data.downloadUrl;
-        a.download = data.filename || 'download';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        // Keep spinner for 3s after triggering — browser needs time to start the download
-        setTimeout(() => setDownloadingFormatId(null), 3000);
-      },
-      onError: () => {
-        setDownloadingFormatId(null);
+    getDownloadUrl.mutate(
+      { data: { url, formatId } },
+      {
+        onSuccess: (data) => {
+          const a = document.createElement("a");
+          a.href = data.downloadUrl;
+          a.download = data.filename || "download";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => setDownloadingFormatId(null), 3000);
+        },
+        onError: () => {
+          setDownloadingFormatId(null);
+        },
       }
-    });
+    );
   };
 
   const handleThumbnailDownload = (url: string) => {
     if (!url) return;
     const proxyUrl = `/api/video/thumbnail?url=${encodeURIComponent(url)}`;
-    const a = document.createElement('a');
+    const a = document.createElement("a");
     a.href = proxyUrl;
-    a.download = 'thumbnail.jpg';
+    a.download = "thumbnail.jpg";
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -57,11 +58,14 @@ export function ResultSection({
 
   if (!isLoading && !info && !error) return null;
 
+  const platform = info ? PLATFORMS.find((p) => p.id === detectPlatform(info.url)) : null;
+
   return (
     <section className="w-full max-w-4xl mx-auto px-4 pb-20">
       <AnimatePresence mode="wait">
         {isLoading && (
-          <motion.div 
+          <motion.div
+            key="loading"
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95 }}
@@ -74,7 +78,8 @@ export function ResultSection({
         )}
 
         {error && !isLoading && (
-          <motion.div 
+          <motion.div
+            key="error"
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             className="glass border-red-500/30 bg-red-500/5 rounded-3xl p-8 flex flex-col items-center justify-center text-center shadow-xl"
@@ -84,7 +89,7 @@ export function ResultSection({
             <p className="text-red-200 mb-8 max-w-md">{error}</p>
             <div className="flex items-center gap-3 flex-wrap justify-center">
               {onRetry && (
-                <button 
+                <button
                   onClick={onRetry}
                   className="flex items-center gap-2 bg-primary/80 hover:bg-primary text-white px-6 py-3 rounded-xl font-semibold transition-colors shadow"
                 >
@@ -92,7 +97,7 @@ export function ResultSection({
                   Try Again
                 </button>
               )}
-              <button 
+              <button
                 onClick={onReset}
                 className="flex items-center gap-2 bg-white/10 hover:bg-white/20 text-white px-6 py-3 rounded-xl font-medium transition-colors"
               >
@@ -103,19 +108,46 @@ export function ResultSection({
         )}
 
         {info && !isLoading && (
-          <motion.div 
+          <motion.div
+            key="result"
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             className="glass rounded-3xl overflow-hidden shadow-2xl"
           >
+            {/* Platform + Title Header */}
+            <div className="flex items-center gap-3 px-6 pt-6 pb-4 border-b border-white/10">
+              {platform ? (
+                <div
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold shrink-0"
+                  style={{ background: `${platform.color}22`, border: `1px solid ${platform.color}55` }}
+                >
+                  <platform.IconComponent className="w-4 h-4" style={{ color: platform.color }} />
+                  <span style={{ color: platform.color }}>{platform.name}</span>
+                </div>
+              ) : (
+                <div className="px-3 py-1.5 rounded-full bg-white/10 text-xs font-bold text-white/80 shrink-0">
+                  {info.platform}
+                </div>
+              )}
+              <h3 className="text-base font-bold text-white line-clamp-1 leading-snug">
+                {info.title}
+              </h3>
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-5 gap-0">
-              {/* Left Column: Thumbnail & Info */}
-              <div className="md:col-span-2 p-6 bg-white/5 border-r border-white/5">
-                <div className="relative rounded-xl overflow-hidden aspect-video bg-black mb-6 shadow-lg">
+              {/* Left Column: Thumbnail */}
+              <div className="md:col-span-2 p-6 bg-white/5 md:border-r border-white/5">
+                <div className="relative rounded-xl overflow-hidden aspect-video bg-black mb-4 shadow-lg">
                   {info.thumbnail ? (
-                    <img src={info.thumbnail} alt={info.title} className="w-full h-full object-cover" />
+                    <img
+                      src={info.thumbnail}
+                      alt={info.title}
+                      className="w-full h-full object-cover"
+                    />
                   ) : (
-                    <div className="w-full h-full flex items-center justify-center text-white/20">No Thumbnail</div>
+                    <div className="w-full h-full flex items-center justify-center text-white/20 text-sm">
+                      No Thumbnail
+                    </div>
                   )}
                   {info.duration && (
                     <div className="absolute bottom-2 right-2 bg-black/80 backdrop-blur text-white text-xs font-mono px-2 py-1 rounded">
@@ -123,84 +155,73 @@ export function ResultSection({
                     </div>
                   )}
                 </div>
-                
-                <h3 className="text-lg font-bold text-white line-clamp-2 mb-3 leading-snug">
-                  {info.title}
-                </h3>
-                
-                <div className="flex items-center gap-2 mb-6">
-                  {(() => {
-                    const platform = PLATFORMS.find(p => p.id === detectPlatform(info.url));
-                    if (!platform) return <div className="px-3 py-1 rounded-full bg-white/10 text-xs font-medium">{info.platform}</div>;
-                    const Icon = platform.IconComponent;
-                    return (
-                      <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/10 text-xs font-bold">
-                        <Icon className="w-4 h-4" />
-                        <span>{platform.name}</span>
-                      </div>
-                    );
-                  })()}
-                </div>
 
-                <button 
-                  onClick={() => handleThumbnailDownload(info.thumbnail || '')}
+                <button
+                  onClick={() => handleThumbnailDownload(info.thumbnail || "")}
                   disabled={!info.thumbnail}
-                  className="w-full flex items-center justify-center gap-2 bg-white/10 hover:bg-white/20 text-white px-4 py-3 rounded-xl font-medium transition-colors text-sm disabled:opacity-50"
+                  className="w-full flex items-center justify-center gap-2 bg-white/10 hover:bg-white/20 text-white px-4 py-2.5 rounded-xl font-medium transition-colors text-sm disabled:opacity-40"
                 >
-                  <ImageIcon className="w-4 h-4" />
+                  <ImageDown className="w-4 h-4" />
                   Download Thumbnail
                 </button>
               </div>
 
               {/* Right Column: Download Options */}
               <div className="md:col-span-3 p-6 flex flex-col">
-                <div className="flex bg-white/5 rounded-xl p-1 mb-6">
-                  <button 
-                    onClick={() => setActiveTab('video')}
-                    className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-colors ${activeTab === 'video' ? 'bg-primary text-white shadow-md' : 'text-white/60 hover:text-white'}`}
+                <div className="flex bg-white/5 rounded-xl p-1 mb-5">
+                  <button
+                    onClick={() => setActiveTab("video")}
+                    className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-colors ${activeTab === "video" ? "bg-primary text-white shadow-md" : "text-white/60 hover:text-white"}`}
                   >
                     <Film className="w-4 h-4" /> Video
                   </button>
-                  <button 
-                    onClick={() => setActiveTab('audio')}
-                    className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-colors ${activeTab === 'audio' ? 'bg-secondary text-white shadow-md' : 'text-white/60 hover:text-white'}`}
+                  <button
+                    onClick={() => setActiveTab("audio")}
+                    className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-colors ${activeTab === "audio" ? "bg-secondary text-white shadow-md" : "text-white/60 hover:text-white"}`}
                   >
                     <Music className="w-4 h-4" /> Audio
                   </button>
                 </div>
 
-                <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar space-y-3 max-h-[400px]">
+                <div className="flex-1 overflow-y-auto pr-1 custom-scrollbar space-y-3 max-h-[360px]">
                   {info.formats
-                    .filter(f => f.type === activeTab)
+                    .filter((f) => f.type === activeTab)
                     .map((format, i) => {
-                      const sizeStr = format.type === "video"
-                        ? formatBytes(format.filesize)
-                        : (() => {
-                            const m = format.formatId.match(/:audio:(\d+)$/);
-                            if (!m || !info.duration) return null;
-                            const mb = (info.duration * parseInt(m[1])) / 8 / 1024;
-                            return mb < 1 ? `~${Math.round(mb * 1024)} KB` : `~${mb.toFixed(0)} MB`;
-                          })();
+                      const sizeStr =
+                        format.type === "video"
+                          ? formatBytes(format.filesize)
+                          : (() => {
+                              const m = format.formatId.match(/:audio:(\d+)$/);
+                              if (!m || !info.duration) return null;
+                              const mb = (info.duration * parseInt(m[1])) / 8 / 1024;
+                              return mb < 1 ? `~${Math.round(mb * 1024)} KB` : `~${mb.toFixed(0)} MB`;
+                            })();
                       return (
-                        <div key={i} className="flex items-center justify-between p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 transition-colors">
-                          <div className="flex flex-col">
-                            <div className="flex items-center gap-2 mb-1">
+                        <div
+                          key={i}
+                          className="flex items-center justify-between p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 transition-colors"
+                        >
+                          <div className="flex flex-col gap-1">
+                            <div className="flex items-center gap-2">
                               <span className="font-bold text-white text-lg">{format.quality}</span>
                               {format.badge && (
-                                <span className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider bg-white/10 text-white/80 uppercase">
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider bg-white/10 text-white/70 uppercase">
                                   {format.badge}
                                 </span>
                               )}
                             </div>
-                            <span className="text-xs text-muted-foreground font-mono">
-                              {sizeStr ? <span className="text-white/70 font-semibold">{sizeStr}</span> : null}
-                              {sizeStr ? " • " : ""}{format.label}
+                            <span className="text-xs text-muted-foreground">
+                              {sizeStr ? (
+                                <span className="text-white/60 font-medium">{sizeStr}</span>
+                              ) : null}
+                              {sizeStr ? " • " : ""}
+                              {format.label}
                             </span>
                           </div>
                           <button
                             onClick={() => handleDownload(info.url, format.formatId)}
                             disabled={!!downloadingFormatId}
-                            className="flex items-center justify-center w-12 h-12 rounded-xl bg-green-500/20 text-green-400 hover:bg-green-500 hover:text-white transition-all shadow-[0_0_10px_rgba(34,197,94,0.2)] hover:shadow-[0_0_20px_rgba(34,197,94,0.4)] disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="flex items-center justify-center w-12 h-12 rounded-xl bg-green-500/20 text-green-400 hover:bg-green-500 hover:text-white transition-all shadow-[0_0_10px_rgba(34,197,94,0.2)] hover:shadow-[0_0_20px_rgba(34,197,94,0.4)] disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
                           >
                             {downloadingFormatId === format.formatId ? (
                               <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
@@ -212,8 +233,8 @@ export function ResultSection({
                       );
                     })}
 
-                  {info.formats.filter(f => f.type === activeTab).length === 0 && (
-                    <div className="text-center py-12 text-muted-foreground">
+                  {info.formats.filter((f) => f.type === activeTab).length === 0 && (
+                    <div className="text-center py-12 text-muted-foreground text-sm">
                       No {activeTab} formats available for this video.
                     </div>
                   )}

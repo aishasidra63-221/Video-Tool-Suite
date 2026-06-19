@@ -550,7 +550,8 @@ router.post("/info", async (req, res) => {
         duration: snap.duration || null,
         platform,
         formats: [
-          { formatId: "snapchat:video", quality: "HD", label: "Video (MP4)", type: "video", filesize: null, badge: "HD" },
+          { formatId: "snapchat:video", quality: "HD", label: "Video (MP4)", type: "video" as const, filesize: null, badge: "HD" },
+          { formatId: "snapchat:audio", quality: "MP3", label: "Audio (MP3)", type: "audio" as const, filesize: null, badge: null },
         ],
       });
     }
@@ -649,7 +650,7 @@ router.post("/download", async (req, res) => {
     return;
   }
 
-  // ── Snapchat: re-fetch from cache or scrape again
+  // ── Snapchat: video or audio download ────────────────────────────────────
   if (/snapchat\.com\//.test(url)) {
     try {
       const cached = getCached(url);
@@ -664,7 +665,13 @@ router.post("/download", async (req, res) => {
         res.status(422).json({ error: "Snapchat video URL not available." });
         return;
       }
-      res.json({ downloadUrl: snap.videoUrl, filename: "snapchat_video.mp4" });
+      if (formatId === "snapchat:audio") {
+        // Extract audio from the CDN video stream via ffmpeg
+        const streamUrl = `/api/video/stream?snap_cdn=${encodeURIComponent(snap.videoUrl)}&audio=true&bitrate=192`;
+        res.json({ downloadUrl: streamUrl, filename: "snapchat_audio.mp3" });
+      } else {
+        res.json({ downloadUrl: snap.videoUrl, filename: "snapchat_video.mp4" });
+      }
       return;
     } catch (err) {
       res.status(422).json({ error: "Failed to get Snapchat video. Make sure it's a public Spotlight video." });
@@ -771,12 +778,32 @@ router.post("/download", async (req, res) => {
 // Audio: ffmpeg converts to MP3
 // ─────────────────────────────────────────────────────────────────────────────
 router.get("/stream", async (req, res) => {
-  const { url, formatId, audio, bitrate } = req.query as {
-    url: string;
-    formatId: string;
-    audio: string;
+  const { url, formatId, audio, bitrate, snap_cdn } = req.query as {
+    url?: string;
+    formatId?: string;
+    audio?: string;
     bitrate?: string;
+    snap_cdn?: string;
   };
+
+  // ── Snapchat CDN audio extraction (direct ffmpeg, no yt-dlp needed) ─────
+  if (snap_cdn) {
+    const mp3Bitrate = bitrate || "192";
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Content-Disposition", `attachment; filename="snapchat_audio.mp3"`);
+    const ffmpeg = spawn("ffmpeg", [
+      "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      "-i", snap_cdn,
+      "-vn", "-c:a", "libmp3lame",
+      "-b:a", `${mp3Bitrate}k`,
+      "-f", "mp3", "pipe:1",
+    ]);
+    ffmpeg.stdout.pipe(res);
+    ffmpeg.stderr.on("data", (d: Buffer) => req.log?.info?.({ stderr: d.toString().slice(0, 100) }, "ffmpeg snap audio"));
+    ffmpeg.on("error", (e: Error) => { if (!res.headersSent) res.status(500).end(); });
+    req.on("close", () => ffmpeg.kill());
+    return;
+  }
 
   if (!url || !isValidUrl(url)) {
     res.status(400).json({ error: "Invalid URL." });
