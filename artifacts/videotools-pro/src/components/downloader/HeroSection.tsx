@@ -34,9 +34,6 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
   const handleSubmit = () => {
     if (!url || isPending) return;
     onSubmit(url);
-    setTimeout(() => {
-      document.getElementById("result-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }, 100);
   };
 
   return (
