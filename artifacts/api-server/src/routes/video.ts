@@ -3,18 +3,10 @@ import { exec, spawn } from "child_process";
 import { promisify } from "util";
 import { existsSync, statSync, createReadStream, unlink } from "fs";
 import { GetVideoInfoBody, GetDownloadUrlBody } from "@workspace/api-zod";
+import { getYtDlpBin, withYtClientRotation } from "../lib/ytdlp-manager";
 
 const execAsync = promisify(exec);
 const router = Router();
-
-// ── yt-dlp binary: prefer the workspace-local updated binary ──────────────────
-const YTDLP_BIN = (() => {
-  const candidates = [
-    "/home/runner/workspace/bin/yt-dlp-latest",
-    "/home/runner/workspace/bin/yt-dlp-2026",
-  ];
-  return candidates.find(existsSync) ?? "yt-dlp";
-})();
 
 const PLATFORM_PATTERNS: Record<string, RegExp[]> = {
   YouTube: [/youtube\.com\/watch/, /youtu\.be\//, /youtube\.com\/shorts\//],
@@ -34,15 +26,6 @@ function detectPlatform(url: string): string {
 
 /** Base flags always applied to every yt-dlp call */
 const BASE_FLAGS = "--no-playlist --no-warnings --socket-timeout 20 --no-check-formats";
-
-/** YouTube clients (mid-2026):
- *  ios → returns 144p-2160p video-only + audio-only (best quality)
- *  android → returns format 18 (360p combined, no PO token needed — reliable fallback)
- *  android,ios combined → gets ALL formats in one call
- */
-const YT_IOS_FLAG = '--extractor-args "youtube:player_client=ios"';
-const YT_ANDROID_FLAG = '--extractor-args "youtube:player_client=android"';
-const YT_COMBINED_FLAG = '--extractor-args "youtube:player_client=android,ios"';
 
 // ── Simple in-memory cache (5 min TTL) ────────────────────────────────────
 interface CacheEntry { data: string; expiresAt: number; }
@@ -346,8 +329,9 @@ router.post("/info", async (req, res) => {
 
   const isYouTube = platform === "YouTube";
 
-  const runInfo = async (extraFlags = ""): Promise<string> => {
-    const cmd = `"${YTDLP_BIN}" --dump-json ${BASE_FLAGS} ${extraFlags} "${url}"`;
+  const runInfo = async (clientFlag = ""): Promise<string> => {
+    const bin = getYtDlpBin();
+    const cmd = `"${bin}" --dump-json ${BASE_FLAGS} ${clientFlag} "${url}"`;
     const { stdout } = await execAsync(cmd, { timeout: 35000 });
     return stdout;
   };
@@ -360,53 +344,14 @@ router.post("/info", async (req, res) => {
       req.log.info("cache hit");
       stdout = cached;
     } else if (isYouTube) {
-      // ── YouTube HD extraction strategy (mid-2026) ─────────────────────────
-      // iOS client: returns 144p-2160p video-only formats — best quality, works server-side.
-      // Android client: returns format 18 (360p combined mp4) — reliable fallback.
-      // Combined "android,ios": gets all formats in a single call.
-      // Strategy: try combined first, fallback to ios-only, then android-only.
-
-      const tryClient = async (flag: string) => {
-        const out = await runInfo(flag);
-        if (!out.trim()) throw new Error("empty output");
-        const info: YtDlpInfo = JSON.parse(out.trim().split("\n")[0]);
-        const fmtCount = (info.formats || []).filter(
-          (f) => f.height && f.height >= 720 && f.vcodec !== "none"
-        ).length;
-        return { stdout: out, fmtCount };
-      };
-
-      // Try combined android+ios first (fastest — one call, all formats)
-      let bestResult: { stdout: string; fmtCount: number } | null = null;
-      try {
-        bestResult = await tryClient(YT_COMBINED_FLAG);
-        req.log.info({ fmtCount: bestResult.fmtCount }, "YouTube combined client OK");
-      } catch {
-        req.log.warn("YouTube combined client failed, trying ios-only");
-      }
-
-      // Fallback: ios-only
-      if (!bestResult || bestResult.fmtCount === 0) {
-        try {
-          bestResult = await tryClient(YT_IOS_FLAG);
-          req.log.info({ fmtCount: bestResult.fmtCount }, "YouTube ios client OK");
-        } catch {
-          req.log.warn("YouTube ios client failed, trying android fallback");
-        }
-      }
-
-      // Last resort: android (360p only)
-      if (!bestResult) {
-        try {
-          bestResult = await tryClient(YT_ANDROID_FLAG);
-          req.log.warn("YouTube: android fallback (360p only)");
-        } catch {
-          throw new Error("All YouTube clients failed");
-        }
-      }
-
-      if (!bestResult) throw new AggregateError([], "All YouTube clients failed");
-      stdout = bestResult.stdout;
+      // ── YouTube: smart client rotation ────────────────────────────────────
+      // withYtClientRotation tries clients in health-ranked order:
+      // android,ios → ios → android → mweb
+      // Failed clients get a 5-min cooldown; successful ones get priority.
+      const { result: out } = await withYtClientRotation(
+        (flag) => runInfo(flag),
+      );
+      stdout = out;
       setCache(url, stdout);
     } else {
       stdout = await withRetry(() => runInfo());
@@ -416,32 +361,6 @@ router.post("/info", async (req, res) => {
     const firstLine = stdout.trim().split("\n")[0];
     const info: YtDlpInfo = JSON.parse(firstLine);
     const formats = buildFormats(info.formats);
-
-    // ── YouTube HD injection ───────────────────────────────────────────────
-    // Default yt-dlp client returns 720p/1080p as HLS m3u8 (format 232/270),
-    // but info extraction sometimes only gets 360p (android client fallback).
-    // We inject virtual HD options: at download time the stream endpoint uses
-    // the default client (web) which reliably gets HLS 720p/1080p.
-    if (isYouTube) {
-      const videoFmts = formats.filter((f) => f.type === "video");
-      const hasHD = videoFmts.some((f) => {
-        const h = parseInt(f.quality);
-        return !isNaN(h) && h >= 720;
-      });
-      if (!hasHD) {
-        // Insert HD options before 360p in the video formats list
-        const insertIdx = formats.findIndex((f) => f.type === "video");
-        const hdOptions = [
-          { formatId: "270", quality: "1080p", label: "1080p Full HD", type: "video" as const, filesize: null, badge: "Full HD" },
-          { formatId: "232", quality: "720p", label: "720p HD", type: "video" as const, filesize: null, badge: "HD" },
-        ];
-        if (insertIdx >= 0) {
-          formats.splice(insertIdx, 0, ...hdOptions);
-        } else {
-          formats.unshift(...hdOptions);
-        }
-      }
-    }
 
     res.json({
       url,
@@ -518,7 +437,8 @@ router.post("/download", async (req, res) => {
 
   // Helper: try --get-url with a specific client flag
   const tryGetUrl = async (clientFlag: string) => {
-    const cmd = `"${YTDLP_BIN}" -f "${actualFormatId}" --get-url --no-warnings --socket-timeout 20 ${clientFlag} "${url}"`;
+    const bin = getYtDlpBin();
+    const cmd = `"${bin}" -f "${actualFormatId}" --get-url --no-warnings --socket-timeout 20 ${clientFlag} "${url}"`;
     const { stdout } = await execAsync(cmd, { timeout: 35000 });
     const urls = stdout.trim().split("\n").filter(Boolean);
     if (!urls.length) throw new Error("No URLs");
@@ -529,16 +449,9 @@ router.post("/download", async (req, res) => {
     let urls: string[] = [];
 
     if (isYtDownload) {
-      // YouTube: try ios first (gives HD 720p-4K), then android (360p combined fallback)
-      try {
-        urls = await tryGetUrl('--extractor-args "youtube:player_client=ios"');
-      } catch {
-        try {
-          urls = await tryGetUrl('--extractor-args "youtube:player_client=android"');
-        } catch {
-          urls = await tryGetUrl('--extractor-args "youtube:player_client=android,ios"');
-        }
-      }
+      // YouTube: smart client rotation — tries clients in health-ranked order
+      const { result } = await withYtClientRotation((flag) => tryGetUrl(flag));
+      urls = result;
     } else {
       urls = await tryGetUrl("--geo-bypass");
     }
@@ -602,15 +515,18 @@ router.get("/stream", async (req, res) => {
     const isYtAudio = /youtube\.com\/|youtu\.be\//.test(url);
 
     if (isYtAudio) {
-      // YouTube audio (mid-2026): ios/tv_embedded/web all blocked for audio-only from server IPs.
-      // Only reliable path: android client → format 18 (360p combined mp4, no PO token needed)
-      // → ffmpeg -vn extracts audio only. Output size = duration × bitrate (correct behaviour).
-      req.log.info("YouTube audio: format 18 → ffmpeg");
+      // YouTube audio: use client rotation to get a direct CDN URL, then ffmpeg -vn extracts audio
+      req.log.info("YouTube audio: client rotation → ffmpeg");
       try {
-        const { stdout: f18out } = await execAsync(
-          `"${YTDLP_BIN}" -f "18" --get-url --no-warnings --socket-timeout 20 --extractor-args "youtube:player_client=android" "${url}"`,
-          { timeout: 25000 }
-        );
+        const bin = getYtDlpBin();
+        const { result: f18out } = await withYtClientRotation(async (flag) => {
+          const { stdout } = await execAsync(
+            `"${bin}" -f "18/bestaudio" --get-url --no-warnings --socket-timeout 20 ${flag} "${url}"`,
+            { timeout: 25000 }
+          );
+          if (!stdout.trim()) throw new Error("empty");
+          return stdout;
+        });
         const f18url = f18out.trim().split("\n")[0];
         if (!f18url || f18url.includes(".m3u8") || f18url.includes("/manifest/")) {
           throw new Error("No direct URL");
@@ -637,7 +553,7 @@ router.get("/stream", async (req, res) => {
     } else {
       // Non-YouTube: try direct CDN URL + ffmpeg (faster), fallback to yt-dlp pipe
       try {
-        const cmd = `"${YTDLP_BIN}" -f "${audioFmt}" --get-url --no-warnings --socket-timeout 20 --geo-bypass "${url}"`;
+        const cmd = `"${getYtDlpBin()}" -f "${audioFmt}" --get-url --no-warnings --socket-timeout 20 --geo-bypass "${url}"`;
         const { stdout } = await execAsync(cmd, { timeout: 35000 });
         const audioUrl = stdout.trim().split("\n")[0];
         // Reject HLS manifests (ffmpeg can't handle them without special auth)
@@ -663,7 +579,7 @@ router.get("/stream", async (req, res) => {
         req.on("close", () => ffmpeg.kill());
       } catch (err) {
         req.log.warn({ err: (err as Error).message }, "Audio CDN fallback, piping yt-dlp");
-        const ytdlp = spawn(YTDLP_BIN, [
+        const ytdlp = spawn(getYtDlpBin(), [
           "-f", audioFmt,
           "-x", "--audio-format", "mp3",
           "--audio-quality", `${mp3Bitrate}K`,
@@ -732,7 +648,7 @@ router.get("/stream", async (req, res) => {
 
     const runDownload = (args: string[], label: string): Promise<string | null> =>
       new Promise((resolve) => {
-        const proc = spawn(YTDLP_BIN, args);
+        const proc = spawn(getYtDlpBin(), args);
         proc.stderr.on("data", (d: Buffer) =>
           req.log.info({ stderr: d.toString().slice(0, 200) }, label)
         );
@@ -744,17 +660,16 @@ router.get("/stream", async (req, res) => {
         req.on("close", () => proc.kill());
       });
 
-    // Try ios client first (720p-4K), then android fallback (360p combined)
-    let tmpFile = await runDownload(
-      buildArgs(["--extractor-args", "youtube:player_client=ios"]),
-      "yt-dlp ios download"
-    );
-    if (!tmpFile) {
-      req.log.warn("iOS client failed, trying android fallback");
+    // Client rotation: tries android,ios → ios → android → mweb in health-ranked order
+    const clients = ["android,ios", "ios", "android", "mweb"] as const;
+    let tmpFile: string | null = null;
+    for (const client of clients) {
       tmpFile = await runDownload(
-        buildArgs(["--extractor-args", "youtube:player_client=android"]),
-        "yt-dlp android download"
+        buildArgs(["--extractor-args", `youtube:player_client=${client}`]),
+        `yt-dlp ${client} download`
       );
+      if (tmpFile) { req.log.info({ client }, "YouTube download succeeded"); break; }
+      req.log.warn({ client }, "Download client failed, trying next");
     }
     streamTempFile(tmpFile ?? `${tmpBase}.mkv`);
     return;
@@ -764,7 +679,7 @@ router.get("/stream", async (req, res) => {
   try {
     const fmtSelector = `${formatId}+bestaudio/${formatId}/best`;
     const { stdout } = await execAsync(
-      `"${YTDLP_BIN}" -f "${fmtSelector}" --get-url --no-warnings --socket-timeout 20 --geo-bypass "${url}"`,
+      `"${getYtDlpBin()}" -f "${fmtSelector}" --get-url --no-warnings --socket-timeout 20 --geo-bypass "${url}"`,
       { timeout: 35000 }
     );
     const cdnUrls = stdout.trim().split("\n").filter(Boolean);
@@ -814,7 +729,7 @@ router.get("/stream", async (req, res) => {
       "-o", "-",
       url,
     ];
-    const ytdlp = spawn(YTDLP_BIN, pipeArgs);
+    const ytdlp = spawn(getYtDlpBin(), pipeArgs);
     ytdlp.stdout.pipe(res);
     ytdlp.stderr.on("data", (d: Buffer) =>
       req.log.info({ stderr: d.toString().slice(0, 150) }, "yt-dlp stream fallback")
