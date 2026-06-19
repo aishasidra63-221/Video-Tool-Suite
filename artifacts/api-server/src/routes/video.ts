@@ -101,7 +101,7 @@ setInterval(() => {
 const PLATFORM_PATTERNS: Record<string, RegExp[]> = {
   YouTube: [/youtube\.com\/watch/, /youtu\.be\//, /youtube\.com\/shorts\//],
   TikTok: [/tiktok\.com\//],
-  Snapchat: [/snapchat\.com/],
+  Snapchat: [/snapchat\.com/, /story\.snapchat\.com/],
   Instagram: [/instagram\.com\/(p|reel|tv)\//],
 };
 
@@ -224,6 +224,19 @@ interface SnapchatData {
   duration: number | null;
 }
 
+// Normalize Snapchat URLs: story.snapchat.com → www.snapchat.com
+function normalizeSnapchatUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname === "story.snapchat.com") {
+      return `https://www.snapchat.com${parsed.pathname}${parsed.search}`;
+    }
+    return url;
+  } catch {
+    return url;
+  }
+}
+
 function snapHttpGet(url: string, maxRedirects = 8): Promise<string> {
   return new Promise((resolve, reject) => {
     if (maxRedirects <= 0) return reject(new Error("Snapchat: too many redirects"));
@@ -234,14 +247,20 @@ function snapHttpGet(url: string, maxRedirects = 8): Promise<string> {
       path: parsed.pathname + parsed.search,
       method: "GET",
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        // Force English response — prevents localized (Hindi/etc.) og:title like-count strings
+        "Accept-Language": "en-US,en;q=1.0",
         "Accept-Encoding": "identity",
         "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Referer": "https://www.google.com/",
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "cross-site",
+        "Upgrade-Insecure-Requests": "1",
       },
     }, (res) => {
-      // Handle all redirect types including 308
       if (res.statusCode && [301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
         const loc = res.headers.location.startsWith("http")
           ? res.headers.location
@@ -254,7 +273,7 @@ function snapHttpGet(url: string, maxRedirects = 8): Promise<string> {
       res.on("end", () => resolve(data));
     });
     req.on("error", reject);
-    req.setTimeout(25000, () => { req.destroy(); reject(new Error("Snapchat fetch timeout")); });
+    req.setTimeout(20000, () => { req.destroy(); reject(new Error("Snapchat fetch timeout")); });
     req.end();
   });
 }
@@ -272,7 +291,8 @@ function deepFindStrings(obj: unknown, predicate: (s: string) => boolean, result
   return results;
 }
 
-async function snapchatFetch(videoUrl: string): Promise<SnapchatData> {
+async function snapchatFetch(rawUrl: string): Promise<SnapchatData> {
+  const videoUrl = normalizeSnapchatUrl(rawUrl);
   const html = await snapHttpGet(videoUrl);
 
   // ── Step 1: og:video meta tag — ALWAYS points to the correct current video ─
@@ -326,30 +346,64 @@ async function snapchatFetch(videoUrl: string): Promise<SnapchatData> {
   }
 
   // ── Title + Username ─────────────────────────────────────────────────────
-  // og:title format: "{N} likes | {ACTUAL TITLE} | @user | Posted ... | Snapchat"
+  // og:title format (English): "{N} likes | {ACTUAL TITLE} | @user | Posted ... | Snapchat"
+  // When localized (e.g. Hindi), the title may just be stats with no pipe separators.
+  // og:description is often more reliable for the actual caption text.
   const titleMatch = html.match(/<meta[^>]+property="og:title"[^>]+content="([^"]+)"/) ||
     html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:title"/);
+  const descMatch = html.match(/<meta[^>]+property="og:description"[^>]+content="([^"]+)"/) ||
+    html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:description"/);
+
   let title = "Snapchat Video";
   let uploader: string | null = null;
+
   if (titleMatch) {
     const raw = titleMatch[1];
     const parts = raw.split(/\s*\|\s*/);
-    // Parts: ["2 likes", "Actual Title", "@user", "Posted ...", "Snapchat"]
-    // If first part looks like likes/views count, skip it and take next
-    const firstIsCount = /^\d+\s*(like|view|watch|share|comment)/i.test(parts[0]);
-    if (firstIsCount && parts.length > 1) {
-      title = parts[1].trim();
-    } else if (parts.length > 1) {
-      // Remove "Snapchat" suffix from last part, take first meaningful part
-      const filtered = parts.filter((p) => !/^snapchat$/i.test(p.trim()));
-      title = filtered[0].trim();
-    } else {
-      title = raw.replace(/\s*\|\s*Snapchat\s*$/, "").trim();
+
+    // ── Part classifiers ────────────────────────────────────────────────────
+    // Stats part: ANY part that STARTS with a digit (like counts, share counts, etc.)
+    // Covers English ("53.4K likes") and localized ("53.4ह. लाइक्स") forms.
+    const isStatsPart = (s: string) => /^\d/.test(s.trim());
+
+    // Date/posted part: localized date strings also often start with a digit (day number)
+    // Handled by isStatsPart above. Additional: "Posted ...", "X जून 2026 को पोस्ट"
+    const isDatePart = (s: string) => /^posted/i.test(s.trim());
+
+    // Platform suffix: "Snapchat", "Spotlight", "स्पॉटलाइट"
+    const isPlatformPart = (s: string) => /^snapchat$/i.test(s.trim()) || /^spotlight/i.test(s.trim()) || /^स्पॉटलाइट/.test(s.trim());
+
+    // Extract @username — look for (@handle) pattern inside any part
+    // Covers: "@christie" as standalone OR "Christie Anne (@christieemc)" embedded
+    for (const p of parts) {
+      const embedded = p.match(/\(@?(\w+)\)/);
+      if (embedded) { uploader = embedded[1]; break; }
+      if (p.trim().startsWith("@")) { uploader = p.trim().replace(/^@/, ""); break; }
     }
 
-    // Extract @username — the part starting with "@" in the pipe-separated list
-    const userPart = parts.find((p) => p.trim().startsWith("@"));
-    if (userPart) uploader = userPart.trim().replace(/^@/, "");
+    // Caption = parts that are NOT stats, date, platform, or @user-only
+    const captionParts = parts.filter((p) => {
+      const t = p.trim();
+      if (!t) return false;
+      if (isStatsPart(t)) return false;
+      if (isDatePart(t)) return false;
+      if (isPlatformPart(t)) return false;
+      // Skip pure username parts
+      if (t.startsWith("@")) return false;
+      // Skip "Name (@handle)" — it's the author, not caption
+      if (/^[^#]+\(@?\w+\)$/.test(t) && !t.includes("#")) return false;
+      return true;
+    });
+
+    if (captionParts.length > 0) {
+      title = captionParts[0].trim();
+    } else if (descMatch) {
+      const desc = descMatch[1].replace(/\s*\|\s*Snapchat\s*$/, "").trim();
+      if (desc && desc.length > 3) title = desc;
+    }
+  } else if (descMatch) {
+    const desc = descMatch[1].replace(/\s*\|\s*Snapchat\s*$/, "").trim();
+    if (desc && desc.length > 3) title = desc;
   }
 
   // ── Thumbnail ────────────────────────────────────────────────────────────
@@ -1325,30 +1379,34 @@ router.post("/download", async (req, res) => {
   }
 
   // ── Snapchat: video or audio download ────────────────────────────────────
-  if (/snapchat\.com\//.test(url)) {
+  if (/snapchat\.com\//.test(url) || /story\.snapchat\.com/.test(url)) {
     try {
-      const cached = getCached(url);
+      const normalizedSnapUrl = normalizeSnapchatUrl(url);
+      const cacheKey = normalizedSnapUrl;
+      const cached = getCached(cacheKey);
       let snap: SnapchatData;
       if (cached) {
         snap = JSON.parse(cached);
       } else {
-        snap = await snapchatFetch(url);
-        setCache(url, JSON.stringify(snap), CACHE_TTL_LONG_MS);
+        snap = await snapchatFetch(normalizedSnapUrl);
+        setCache(cacheKey, JSON.stringify(snap), CACHE_TTL_LONG_MS);
       }
       if (!snap.videoUrl) {
         res.status(422).json({ error: "Snapchat video URL not available." });
         return;
       }
       if (formatId === "snapchat:audio") {
-        // Extract audio from the CDN video stream via ffmpeg
+        // Extract audio from CDN video stream via ffmpeg
         const streamUrl = `/api/video/stream?snap_cdn=${encodeURIComponent(snap.videoUrl)}&audio=true&bitrate=192`;
         res.json({ downloadUrl: streamUrl, filename: "snapchat_audio.mp3" });
       } else {
-        res.json({ downloadUrl: snap.videoUrl, filename: "snapchat_video.mp4" });
+        // Proxy video through server — same CDN proxy used for TikTok, avoids browser CORS/referer issues
+        const streamUrl = `/api/video/stream?snap_cdn=${encodeURIComponent(snap.videoUrl)}`;
+        res.json({ downloadUrl: streamUrl, filename: "snapchat_video.mp4" });
       }
       return;
     } catch (err) {
-      res.status(422).json({ error: "Failed to get Snapchat video. Make sure it's a public Spotlight video." });
+      res.status(422).json({ error: "Failed to get Snapchat video. Make sure it's a public Spotlight video URL." });
       return;
     }
   }
@@ -1521,22 +1579,53 @@ router.get("/stream", async (req, res) => {
     return;
   }
 
-  // ── Snapchat CDN audio extraction (direct ffmpeg, no yt-dlp needed) ─────
+  // ── Snapchat CDN proxy (video passthrough or audio extraction via ffmpeg) ─
   if (snap_cdn) {
-    const mp3Bitrate = bitrate || "192";
-    res.setHeader("Content-Type", "audio/mpeg");
-    res.setHeader("Content-Disposition", `attachment; filename="snapchat_audio.mp3"`);
-    const ffmpeg = spawn("ffmpeg", [
-      "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      "-i", snap_cdn,
-      "-vn", "-c:a", "libmp3lame",
-      "-b:a", `${mp3Bitrate}k`,
-      "-f", "mp3", "pipe:1",
-    ]);
-    ffmpeg.stdout.pipe(res);
-    ffmpeg.stderr.on("data", (d: Buffer) => req.log?.info?.({ stderr: d.toString().slice(0, 100) }, "ffmpeg snap audio"));
-    ffmpeg.on("error", (e: Error) => { if (!res.headersSent) res.status(500).end(); });
-    req.on("close", () => ffmpeg.kill());
+    const isSnapAudio = audio === "true";
+
+    if (isSnapAudio) {
+      // Audio: extract mp3 via ffmpeg
+      const mp3Bitrate = bitrate || "192";
+      res.setHeader("Content-Type", "audio/mpeg");
+      res.setHeader("Content-Disposition", `attachment; filename="snapchat_audio.mp3"`);
+      const ffmpeg = spawn("ffmpeg", [
+        "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "-headers", "Referer: https://www.snapchat.com/\r\nOrigin: https://www.snapchat.com",
+        "-i", snap_cdn,
+        "-vn", "-c:a", "libmp3lame",
+        "-b:a", `${mp3Bitrate}k`,
+        "-f", "mp3", "pipe:1",
+      ]);
+      ffmpeg.stdout.pipe(res);
+      ffmpeg.stderr.on("data", (d: Buffer) => req.log?.info?.({ stderr: d.toString().slice(0, 100) }, "ffmpeg snap audio"));
+      ffmpeg.on("error", () => { if (!res.headersSent) res.status(500).end(); });
+      req.on("close", () => ffmpeg.kill());
+    } else {
+      // Video: proxy Snapchat CDN response through server with proper headers
+      // Snapchat CDN URLs are signed GCS buckets — accessible but served more reliably via proxy
+      let parsed: URL;
+      try { parsed = new URL(snap_cdn); } catch { res.status(400).json({ error: "Invalid snap_cdn URL." }); return; }
+      const snapReq = https.request({
+        hostname: parsed.hostname,
+        path: parsed.pathname + parsed.search,
+        method: "GET",
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "Referer": "https://www.snapchat.com/",
+          "Origin": "https://www.snapchat.com",
+          "Accept": "video/mp4,video/*,*/*",
+        },
+      }, (upstream) => {
+        res.setHeader("Content-Type", upstream.headers["content-type"] || "video/mp4");
+        res.setHeader("Content-Disposition", `attachment; filename="snapchat_video.mp4"`);
+        if (upstream.headers["content-length"]) res.setHeader("Content-Length", upstream.headers["content-length"]);
+        upstream.pipe(res);
+      });
+      snapReq.on("error", () => { if (!res.headersSent) res.status(500).end(); });
+      snapReq.setTimeout(30000, () => { snapReq.destroy(); });
+      req.on("close", () => snapReq.destroy());
+      snapReq.end();
+    }
     return;
   }
 
