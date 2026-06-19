@@ -1,5 +1,5 @@
 import { detectPlatform, isValidUrl } from "@/lib/video-utils";
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef } from "react";
 import { Download, X, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 import { motion } from "framer-motion";
 import { PLATFORMS } from "./platform-icons";
@@ -9,38 +9,12 @@ export { PLATFORMS };
 export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) => void, isPending: boolean }) {
   const [url, setUrl] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastSubmittedRef = useRef<string>("");
 
   const platformId = detectPlatform(url);
   const platform = PLATFORMS.find(p => p.id === platformId);
   const isUrlValid = isValidUrl(url);
   const showSuccess = url.length > 0 && isUrlValid && !!platformId;
   const showError = url.length > 0 && (!isUrlValid || !platformId);
-
-  const tryAutoSubmit = useCallback((value: string, immediate = false) => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (!isValidUrl(value) || !detectPlatform(value)) return;
-    if (value === lastSubmittedRef.current) return;
-
-    const delay = immediate ? 0 : 700;
-    debounceRef.current = setTimeout(() => {
-      if (value === lastSubmittedRef.current) return;
-      lastSubmittedRef.current = value;
-      onSubmit(value);
-      // Scroll to result section smoothly
-      setTimeout(() => {
-        document.getElementById("result-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
-      }, 100);
-    }, delay);
-  }, [onSubmit]);
-
-  useEffect(() => {
-    if (!isPending) {
-      tryAutoSubmit(url);
-    }
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
-  }, [url]);
 
   const handleChipClick = () => {
     inputRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -52,23 +26,13 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
       const text = await navigator.clipboard.readText();
       setUrl(text);
       inputRef.current?.focus();
-      // Trigger immediately on paste button — no debounce
-      tryAutoSubmit(text, true);
     } catch {
       inputRef.current?.focus();
     }
   };
 
-  const handleChange = (value: string) => {
-    setUrl(value);
-    if (value !== lastSubmittedRef.current) {
-      lastSubmittedRef.current = "";
-    }
-  };
-
-  const handleManualSubmit = () => {
+  const handleSubmit = () => {
     if (!url || isPending) return;
-    lastSubmittedRef.current = url;
     onSubmit(url);
     setTimeout(() => {
       document.getElementById("result-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -150,16 +114,10 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
               ref={inputRef}
               type="text"
               value={url}
-              onChange={(e) => handleChange(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && url && !isPending && handleManualSubmit()}
-              onPaste={(e) => {
-                const pasted = e.clipboardData.getData("text");
-                handleChange(pasted);
-                tryAutoSubmit(pasted, true);
-              }}
+              onChange={(e) => setUrl(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
               placeholder="Paste video URL here... (YouTube, TikTok, Instagram...)"
               className={`w-full bg-black/50 border-2 rounded-2xl px-4 py-5 md:py-6 text-white placeholder:text-white/40 focus:outline-none transition-all text-lg shadow-inner ${platform ? 'pl-14' : 'pl-6'} ${url ? 'pr-14' : 'pr-28'} ${
-                isPending && showSuccess ? 'border-primary/60 focus:border-primary animate-pulse' :
                 showSuccess ? 'border-green-500/50 focus:border-green-500' :
                 showError   ? 'border-red-500/50 focus:border-red-500' :
                               'border-white/10 focus:border-primary/50'
@@ -170,7 +128,7 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
               {url ? (
                 <button
                   type="button"
-                  onClick={() => { setUrl(""); lastSubmittedRef.current = ""; inputRef.current?.focus(); }}
+                  onClick={() => { setUrl(""); inputRef.current?.focus(); }}
                   className="text-white/50 hover:text-white transition-colors p-1.5 rounded-lg hover:bg-white/10"
                   title="Clear"
                 >
@@ -191,7 +149,7 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
 
           <button
             disabled={!url || isPending}
-            onClick={handleManualSubmit}
+            onClick={handleSubmit}
             className="w-full md:w-auto bg-gradient-primary hover-shimmer text-white px-8 py-5 md:py-6 rounded-2xl font-bold text-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 shrink-0 shadow-[0_0_20px_rgba(108,99,255,0.4)]"
           >
             {isPending ? (
@@ -211,16 +169,10 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
             <span className="text-sm">Please enter a valid supported URL (YouTube, TikTok, Instagram, Facebook, Snapchat, Twitter/X)</span>
           </motion.div>
         )}
-        {showSuccess && !isPending && (
+        {showSuccess && (
           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="mt-3 text-left px-2 flex items-center gap-2 text-green-400">
             <CheckCircle2 className="w-4 h-4" />
-            <span className="text-sm">{platform?.name} URL detected — fetching info automatically...</span>
-          </motion.div>
-        )}
-        {isPending && showSuccess && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="mt-3 text-left px-2 flex items-center gap-2 text-primary">
-            <Loader2 className="w-4 h-4 animate-spin" />
-            <span className="text-sm">Fetching video info from {platform?.name}...</span>
+            <span className="text-sm">{platform?.name} URL detected — ready to download!</span>
           </motion.div>
         )}
       </motion.div>
