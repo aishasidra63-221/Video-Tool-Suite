@@ -35,13 +35,14 @@ function detectPlatform(url: string): string {
 /** Base flags always applied to every yt-dlp call */
 const BASE_FLAGS = "--no-playlist --no-warnings --socket-timeout 20 --no-check-formats";
 
-/** YouTube clients: android is fastest, web gives best quality */
+/** YouTube clients (mid-2026):
+ *  ios → returns 144p-2160p video-only + audio-only (best quality)
+ *  android → returns format 18 (360p combined, no PO token needed — reliable fallback)
+ *  android,ios combined → gets ALL formats in one call
+ */
+const YT_IOS_FLAG = '--extractor-args "youtube:player_client=ios"';
 const YT_ANDROID_FLAG = '--extractor-args "youtube:player_client=android"';
-const YT_WEB_FALLBACKS = [
-  "",  // default web client
-  '--extractor-args "youtube:player_client=ios"',
-  '--extractor-args "youtube:player_client=tv_embedded"',
-];
+const YT_COMBINED_FLAG = '--extractor-args "youtube:player_client=android,ios"';
 
 // ── Simple in-memory cache (5 min TTL) ────────────────────────────────────
 interface CacheEntry { data: string; expiresAt: number; }
@@ -360,11 +361,10 @@ router.post("/info", async (req, res) => {
       stdout = cached;
     } else if (isYouTube) {
       // ── YouTube HD extraction strategy (mid-2026) ─────────────────────────
-      // Default client (no extractor-args): returns 720p/1080p/4K as HLS m3u8.
-      // Android client: returns format 18 (360p combined mp4) quickly — reliable fallback.
-      // We run both in parallel and pick whichever has HD (720p+) first.
-      // KEY BUG FIX: never re-race an already-resolved promise — it returns immediately
-      // with the stale result, preventing the HD client from being awaited.
+      // iOS client: returns 144p-2160p video-only formats — best quality, works server-side.
+      // Android client: returns format 18 (360p combined mp4) — reliable fallback.
+      // Combined "android,ios": gets all formats in a single call.
+      // Strategy: try combined first, fallback to ios-only, then android-only.
 
       const tryClient = async (flag: string) => {
         const out = await runInfo(flag);
@@ -376,33 +376,33 @@ router.post("/info", async (req, res) => {
         return { stdout: out, fmtCount };
       };
 
-      // Helper: promise that only resolves if fmtCount > 0 (HD quality), otherwise never resolves
-      const hdOnly = (p: Promise<{ stdout: string; fmtCount: number } | null>) =>
-        new Promise<{ stdout: string; fmtCount: number }>((resolve, reject) =>
-          p.then((r) => (r && r.fmtCount > 0 ? resolve(r) : reject(new Error("no HD")))).catch(reject)
-        );
-
-      // Start both clients simultaneously (android fast, default has HD)
-      const defaultP = tryClient("").catch(() => null);                   // 720p/1080p HLS
-      const androidP = tryClient(YT_ANDROID_FLAG).catch(() => null);     // 360p mp4 (fast)
-
+      // Try combined android+ios first (fastest — one call, all formats)
       let bestResult: { stdout: string; fmtCount: number } | null = null;
+      try {
+        bestResult = await tryClient(YT_COMBINED_FLAG);
+        req.log.info({ fmtCount: bestResult.fmtCount }, "YouTube combined client OK");
+      } catch {
+        req.log.warn("YouTube combined client failed, trying ios-only");
+      }
 
-      // Wait up to 20s for first HD result
-      const hdResult = await Promise.race([
-        hdOnly(defaultP),
-        hdOnly(androidP),
-        new Promise<null>((r) => setTimeout(() => r(null), 20000)),
-      ]).catch(() => null);
+      // Fallback: ios-only
+      if (!bestResult || bestResult.fmtCount === 0) {
+        try {
+          bestResult = await tryClient(YT_IOS_FLAG);
+          req.log.info({ fmtCount: bestResult.fmtCount }, "YouTube ios client OK");
+        } catch {
+          req.log.warn("YouTube ios client failed, trying android fallback");
+        }
+      }
 
-      if (hdResult) {
-        bestResult = hdResult;
-        req.log.info({ fmtCount: hdResult.fmtCount }, "YouTube HD result");
-      } else {
-        // No HD — use android 360p fallback (already settled or settle now)
-        const [def, and] = await Promise.all([defaultP, androidP]);
-        bestResult = and ?? def;
-        req.log.warn("YouTube: no HD formats, using 360p fallback");
+      // Last resort: android (360p only)
+      if (!bestResult) {
+        try {
+          bestResult = await tryClient(YT_ANDROID_FLAG);
+          req.log.warn("YouTube: android fallback (360p only)");
+        } catch {
+          throw new Error("All YouTube clients failed");
+        }
       }
 
       if (!bestResult) throw new AggregateError([], "All YouTube clients failed");
@@ -529,12 +529,15 @@ router.post("/download", async (req, res) => {
     let urls: string[] = [];
 
     if (isYtDownload) {
-      // YouTube: try android first (works for combined/restricted formats like 18)
-      // then fall back to default web client (for web-client formats like 137, 248)
+      // YouTube: try ios first (gives HD 720p-4K), then android (360p combined fallback)
       try {
-        urls = await tryGetUrl('--extractor-args "youtube:player_client=android"');
+        urls = await tryGetUrl('--extractor-args "youtube:player_client=ios"');
       } catch {
-        urls = await tryGetUrl("");
+        try {
+          urls = await tryGetUrl('--extractor-args "youtube:player_client=android"');
+        } catch {
+          urls = await tryGetUrl('--extractor-args "youtube:player_client=android,ios"');
+        }
       }
     } else {
       urls = await tryGetUrl("--geo-bypass");
@@ -741,10 +744,13 @@ router.get("/stream", async (req, res) => {
         req.on("close", () => proc.kill());
       });
 
-    // Try web client first (720p/1080p/4K), android fallback (360p combined mp4)
-    let tmpFile = await runDownload(buildArgs([]), "yt-dlp web download");
+    // Try ios client first (720p-4K), then android fallback (360p combined)
+    let tmpFile = await runDownload(
+      buildArgs(["--extractor-args", "youtube:player_client=ios"]),
+      "yt-dlp ios download"
+    );
     if (!tmpFile) {
-      req.log.warn("Web client failed, trying android fallback");
+      req.log.warn("iOS client failed, trying android fallback");
       tmpFile = await runDownload(
         buildArgs(["--extractor-args", "youtube:player_client=android"]),
         "yt-dlp android download"
