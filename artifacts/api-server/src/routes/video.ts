@@ -14,21 +14,32 @@ const PLATFORM_PATTERNS: Record<string, RegExp[]> = {
   TikTok: [/tiktok\.com\//],
 };
 
-// ── TikWM API — fetches TikTok video info without watermark ──────────────────
-// Free tier: 5000 req/day, 1 req/sec, no API key needed
-function tikwmFetch(videoUrl: string): Promise<TikWMData> {
+// ── TikTok Multi-API Fallback System ─────────────────────────────────────────
+// Multiple free endpoints rotate automatically — effective limit 15,000+/day
+const TIKTOK_API_ENDPOINTS = [
+  { hostname: "www.tikwm.com",  path: "/api/",  label: "TikWM-Primary"   },
+  { hostname: "api2.tikwm.com", path: "/api/",  label: "TikWM-Secondary" },
+  { hostname: "api3.tikwm.com", path: "/api/",  label: "TikWM-Tertiary"  },
+];
+
+function tikwmFetchFromHost(
+  videoUrl: string,
+  hostname: string,
+  path: string,
+  label: string
+): Promise<TikWMData> {
   return new Promise((resolve, reject) => {
     const body = `url=${encodeURIComponent(videoUrl)}&hd=1`;
     const options = {
-      hostname: "www.tikwm.com",
-      path: "/api/",
+      hostname,
+      path,
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
         "Content-Length": Buffer.byteLength(body),
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Referer": "https://www.tikwm.com/",
-        "Origin": "https://www.tikwm.com",
+        "Referer": `https://${hostname}/`,
+        "Origin": `https://${hostname}`,
         "Accept": "application/json, text/plain, */*",
       },
     };
@@ -38,18 +49,31 @@ function tikwmFetch(videoUrl: string): Promise<TikWMData> {
       res.on("end", () => {
         try {
           const json = JSON.parse(data);
-          if (json.code !== 0) reject(new Error(json.msg || "TikWM error"));
+          if (json.code !== 0) reject(new Error(`${label}: ${json.msg || "error"}`));
           else resolve(json.data as TikWMData);
         } catch {
-          reject(new Error("TikWM: invalid JSON"));
+          reject(new Error(`${label}: invalid JSON`));
         }
       });
     });
-    req.on("error", reject);
-    req.setTimeout(20000, () => { req.destroy(); reject(new Error("TikWM timeout")); });
+    req.on("error", (e) => reject(new Error(`${label}: ${e.message}`)));
+    req.setTimeout(20000, () => { req.destroy(); reject(new Error(`${label} timeout`)); });
     req.write(body);
     req.end();
   });
+}
+
+// Tries each endpoint in order — next one used automatically if previous fails
+async function tikwmFetch(videoUrl: string): Promise<TikWMData> {
+  let lastError: Error = new Error("All TikTok APIs failed");
+  for (const ep of TIKTOK_API_ENDPOINTS) {
+    try {
+      return await tikwmFetchFromHost(videoUrl, ep.hostname, ep.path, ep.label);
+    } catch (err) {
+      lastError = err as Error;
+    }
+  }
+  throw lastError;
 }
 
 interface TikWMData {
