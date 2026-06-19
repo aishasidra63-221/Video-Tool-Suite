@@ -145,11 +145,15 @@ export async function autoUpdateYtDlp(): Promise<void> {
 }
 
 // ── YouTube Client Rotation ─────────────────────────────────────────────────
+// Tested 2026-06: ios, android_embedded, android_testsuite, android_music
+// all return full HD (4K/1440p/1080p/720p/480p) without PO token.
+// android=360p only, mweb=error, tv_embedded=not supported.
 const YT_CLIENTS = [
-  "android,ios",
   "ios",
-  "android",
-  "mweb",
+  "android_embedded",
+  "android_testsuite",
+  "android_music",
+  "android,ios",
 ] as const;
 
 type YtClient = typeof YT_CLIENTS[number];

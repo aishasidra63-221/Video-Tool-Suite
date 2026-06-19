@@ -1580,8 +1580,9 @@ router.get("/stream", async (req, res) => {
 
     await jitter(100, 500); // small random delay before hitting YouTube
 
-    // Client rotation: tries android,ios → ios → android → mweb in health-ranked order
-    const clients = ["android,ios", "ios", "android", "mweb"] as const;
+    // Client rotation: ios/android_embedded/android_testsuite all give full HD
+    // without PO token (tested 2026-06). Prioritize these over plain android/mweb.
+    const clients = ["ios", "android_embedded", "android_testsuite", "android_music"] as const;
     let tmpFile: string | null = null;
     for (const client of clients) {
       tmpFile = await runDownload(
