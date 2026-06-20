@@ -1140,31 +1140,36 @@ router.post("/info", async (req, res) => {
   try {
     // ── TikTok: use TikWM API (no watermark, no server-IP blocks) ────────────
     if (isTikTok) {
-      // vt.tiktok.com short URLs: TikTok blocks server IPs from following these redirects.
-      // Guide user to copy the full video URL from the TikTok app instead.
+      // Normalize first — resolves short URLs (vm.tiktok.com, m.tiktok.com etc.)
+      // before we validate the video ID. vt.tiktok.com cannot be resolved server-side.
       if (/^https?:\/\/vt\.tiktok\.com/.test(url)) {
         return res.status(422).json({
           error: "vt.tiktok.com short links nahi khulte. TikTok app mein video open karo → Share → Copy link → woh full link yahan paste karo.",
           errorCode: "TIKTOK_VT_UNSUPPORTED",
         });
       }
-      // Profile URL (no /video/ path) — can't download a profile, need specific video URL
-      if (!/\/video\/\d+/.test(url)) {
+
+      // Normalize URL first (follows redirects for vm/m short links)
+      const cleanUrl = await normalizeTikTokUrl(url);
+      req.log.info({ original: url, clean: cleanUrl }, "TikTok URL normalized");
+
+      // After normalization, check if we have a valid video ID
+      if (!/\/video\/\d+/.test(cleanUrl)) {
         return res.status(422).json({
           error: "Ye TikTok profile URL hai. Kisi specific video ka link chahiye. Video open karo → Share → Copy link.",
           errorCode: "TIKTOK_NO_VIDEO_ID",
         });
       }
-      const cached = getCached(url);
+
+      const cacheKey = cleanUrl;
+      const cached = getCached(cacheKey);
       let tk: TikWMData;
       if (cached) {
         req.log.info("cache hit (tiktok)");
         tk = JSON.parse(cached);
       } else {
-        const cleanUrl = await normalizeTikTokUrl(url);
-        req.log.info({ original: url, clean: cleanUrl }, "TikTok URL normalized");
         tk = await tikwmFetch(cleanUrl);
-        setCache(url, JSON.stringify(tk), CACHE_TTL_LONG_MS);
+        setCache(cacheKey, JSON.stringify(tk), CACHE_TTL_LONG_MS);
       }
       const formats: Array<{
         formatId: string; quality: string; label: string;
@@ -1657,14 +1662,15 @@ router.post("/download", async (req, res) => {
   // We re-fetch from TikWM cache to get the direct CDN URL
   if (/tiktok\.com\//.test(url)) {
     try {
-      const cached = getCached(url);
+      const cleanUrl = await normalizeTikTokUrl(url);
+      const cacheKey = cleanUrl;
+      const cached = getCached(cacheKey);
       let tk: TikWMData;
       if (cached) {
         tk = JSON.parse(cached);
       } else {
-        const cleanUrl = await normalizeTikTokUrl(url);
         tk = await tikwmFetch(cleanUrl);
-        setCache(url, JSON.stringify(tk), CACHE_TTL_LONG_MS);
+        setCache(cacheKey, JSON.stringify(tk), CACHE_TTL_LONG_MS);
       }
       let directUrl: string;
       let filename: string;
