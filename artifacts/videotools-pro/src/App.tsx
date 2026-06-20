@@ -11,6 +11,8 @@ import Disclaimer from "@/pages/Disclaimer";
 import Dmca from "@/pages/Dmca";
 import Faq from "@/pages/Faq";
 import Settings from "@/pages/Settings";
+import Blog from "@/pages/Blog";
+import BlogPost from "@/pages/BlogPost";
 
 const queryClient = new QueryClient();
 
@@ -19,6 +21,8 @@ function Router() {
     <AppLayout>
       <Switch>
         <Route path="/" component={Home} />
+        <Route path="/blog" component={Blog} />
+        <Route path="/blog/:slug" component={BlogPost} />
         <Route path="/faq" component={Faq} />
         <Route path="/settings" component={Settings} />
         <Route path="/privacy" component={Privacy} />

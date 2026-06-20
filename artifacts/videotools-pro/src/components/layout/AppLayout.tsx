@@ -32,6 +32,7 @@ function Navbar() {
 
   const links = [
     { href: "/", label: "Home" },
+    { href: "/blog", label: "Blog" },
     { href: "/faq", label: "FAQ" },
     { href: "/settings", label: "Settings" },
     { href: "/privacy", label: "Privacy" },
@@ -94,6 +95,11 @@ function Footer() {
           <div>
             <h4 className="font-semibold mb-4 text-white">Pages</h4>
             <ul className="space-y-2 text-sm text-muted-foreground">
+              <li>
+                <Link href="/blog" className="hover:text-white transition-colors">
+                  Blog & Guides
+                </Link>
+              </li>
               <li>
                 <Link href="/faq" className="hover:text-white transition-colors">
                   FAQ
