@@ -7,52 +7,68 @@ import {
 
 const FAQS = [
   {
-    q: "Is this website completely free?",
-    a: "Yes! VideoTools Pro is 100% free to use. There are no hidden fees, no premium subscriptions, and no limits on how many videos you can download."
-  },
-  {
-    q: "Do I need to create an account?",
-    a: "No registration is required. You can start downloading videos immediately without providing any personal information or email addresses."
-  },
-  {
-    q: "Which platforms are supported?",
-    a: "We support YouTube (up to 4K, Shorts, audio) and TikTok (no watermark, HD). YouTube works for 95%+ of public videos. TikTok downloads are fully watermark-free."
-  },
-  {
-    q: "What video quality options are available?",
-    a: "Depending on the original video's source, we offer resolutions ranging from 360p up to 4K Ultra HD. The tool will automatically fetch all available qualities for you to choose from."
-  },
-  {
-    q: "Is it safe to use?",
-    a: "Absolutely. Our site is secure, uses HTTPS, and does not contain malicious pop-ups or harmful ads. We do not store any of your downloaded videos on our servers."
-  },
-  {
-    q: "Can I download MP3 audio?",
-    a: "Yes! For every supported video link, we provide dedicated audio extraction options, allowing you to download MP3 files in various bitrates (up to 320kbps)."
+    q: "How to download YouTube videos for free?",
+    a: "Copy the YouTube video URL, paste it into VideoTools Pro, select Video and your preferred quality (720p, 1080p, or 1440p), then click Download. No account or registration needed — completely free and instant."
   },
   {
     q: "How to download TikTok without watermark?",
-    a: "Just paste any TikTok video URL. Our system uses a specialized API to deliver the clean, watermark-free HD version directly — no extra steps needed."
+    a: "Open the TikTok video, tap Share → Copy Link. Paste the link into VideoTools Pro and click Download. Our system automatically delivers a clean, watermark-free HD video — no extra steps needed."
   },
   {
-    q: "Is there a download limit?",
-    a: "We do not enforce a strict daily limit for normal usage. You can download as many videos as you need for personal use."
+    q: "How to download Snapchat Spotlight videos?",
+    a: "Open the Snapchat Spotlight video on snapchat.com in your browser, copy the page URL, paste it into VideoTools Pro, and click Download. Works for all public Spotlight videos."
   },
   {
-    q: "Does it work on mobile?",
-    a: "Yes, VideoTools Pro is fully responsive and works perfectly on iOS (iPhone/iPad) and Android devices through any modern mobile web browser."
-  }
+    q: "Can I download YouTube videos as MP3 audio?",
+    a: "Yes! Select 'Audio' when downloading any YouTube video. VideoTools Pro extracts high-quality MP3 audio (up to 192kbps). Perfect for podcasts, music, and lectures."
+  },
+  {
+    q: "What video quality options are available?",
+    a: "For YouTube: 720p HD, 1080p Full HD, and 1440p 2K — plus Audio MP3. For TikTok: HD (no watermark) and Standard. For Snapchat: HD Original and Compressed 480p."
+  },
+  {
+    q: "Is VideoTools Pro completely free?",
+    a: "Yes — 100% free forever. No hidden fees, no premium plans, no download limits, and no login required. Just paste the URL and download."
+  },
+  {
+    q: "Do I need to create an account or sign up?",
+    a: "No registration required at all. You can start downloading videos immediately without providing any email address or personal information."
+  },
+  {
+    q: "Does it work on iPhone and Android?",
+    a: "Yes, VideoTools Pro is fully mobile-friendly. It works on iPhone, iPad, and all Android devices through any modern browser — Chrome, Safari, Firefox, Edge."
+  },
+  {
+    q: "Is it safe to use this video downloader?",
+    a: "Absolutely. Our site uses HTTPS encryption, has no malicious pop-ups or harmful ads, and does not store any of your downloaded videos on our servers. Your privacy is protected."
+  },
+  {
+    q: "Is there a daily download limit?",
+    a: "No strict daily limits for normal personal use. Download as many videos as you need. Our servers are optimized to handle requests quickly with no artificial throttling."
+  },
+  {
+    q: "Why is TikTok video download not working?",
+    a: "Make sure you are copying the full TikTok URL (from the browser or the app's Share → Copy Link). Short 'vt.tiktok.com' links may not work — use the complete video URL instead."
+  },
+  {
+    q: "How fast is the video download?",
+    a: "VideoTools Pro fetches video info in under 2 seconds for most platforms. Download speed depends on your internet connection and the file size — no artificial delays are added."
+  },
 ];
 
 export function FaqSection() {
   return (
-    <section className="py-24 bg-white/[0.02]">
+    <section className="py-24 bg-white/[0.02]" aria-labelledby="faq-heading">
       <div className="container mx-auto px-4 max-w-4xl">
         <div className="text-center mb-16">
-          <h2 className="text-3xl md:text-5xl font-bold mb-4">Frequently Asked Questions</h2>
-          <p className="text-lg text-muted-foreground">Everything you need to know about VideoTools Pro.</p>
+          <h2 id="faq-heading" className="text-3xl md:text-5xl font-bold mb-4">
+            Frequently Asked Questions
+          </h2>
+          <p className="text-lg text-muted-foreground">
+            Everything you need to know about downloading YouTube, TikTok, and Snapchat videos free.
+          </p>
         </div>
-        
+
         <div className="glass rounded-3xl p-6 md:p-8">
           <Accordion type="single" collapsible className="w-full">
             {FAQS.map((faq, i) => (
