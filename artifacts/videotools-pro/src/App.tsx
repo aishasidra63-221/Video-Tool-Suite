@@ -13,6 +13,8 @@ import Faq from "@/pages/Faq";
 import Settings from "@/pages/Settings";
 import Blog from "@/pages/Blog";
 import BlogPost from "@/pages/BlogPost";
+import TikTokMp3 from "@/pages/TikTokMp3";
+import TikTokStories from "@/pages/TikTokStories";
 
 const queryClient = new QueryClient();
 
@@ -29,6 +31,8 @@ function Router() {
         <Route path="/terms" component={Terms} />
         <Route path="/disclaimer" component={Disclaimer} />
         <Route path="/dmca" component={Dmca} />
+        <Route path="/download-tiktok-mp3" component={TikTokMp3} />
+        <Route path="/download-tiktok-stories" component={TikTokStories} />
         <Route component={NotFound} />
       </Switch>
     </AppLayout>
