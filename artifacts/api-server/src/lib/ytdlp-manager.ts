@@ -353,6 +353,9 @@ class TokenBucket {
 // 20 calls / minute burst capacity
 export const ytRateLimiter = new TokenBucket(20, 20);
 
+// Twitter guest-token API: ~15 calls/min per IP (XFF rotation multiplies this 14x)
+export const twitterRateLimiter = new TokenBucket(15, 15);
+
 // ── Helper: build extractor-args flag for a YouTube client ─────────────────
 // skip=translated_subs  → fewer API calls (real Android apps don't fetch these)
 // Centralised here so every call site gets the same safe args automatically.

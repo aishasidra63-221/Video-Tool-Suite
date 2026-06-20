@@ -4,7 +4,7 @@ import { promisify } from "util";
 import { existsSync, statSync, createReadStream, unlink } from "fs";
 import https from "https";
 import { GetVideoInfoBody, GetDownloadUrlBody } from "@workspace/api-zod";
-import { getYtDlpBin, withYtClientRotation, withYtClientRotationFast, hasCookies, getCookiesFlag, hasInstagramCookies, getInstagramCookiesFlag, getXffFlag, getBrowserHeaderFlags, getYtExtractorArgs, ytRateLimiter } from "../lib/ytdlp-manager";
+import { getYtDlpBin, withYtClientRotation, withYtClientRotationFast, hasCookies, getCookiesFlag, hasInstagramCookies, getInstagramCookiesFlag, getXffFlag, getBrowserHeaderFlags, getYtExtractorArgs, ytRateLimiter, twitterRateLimiter } from "../lib/ytdlp-manager";
 
 const execAsync = promisify(exec);
 const router = Router();
@@ -48,6 +48,7 @@ const ytStreamSemaphore = new Semaphore(3); // max 3 concurrent stream/downloads
 // Prevents N concurrent users hitting the same URL from making N requests
 const igInFlight = new Map<string, Promise<InstagramData>>();
 const ytInFlight = new Map<string, Promise<string>>(); // YouTube info deduplication
+const twInFlight = new Map<string, Promise<string>>(); // Twitter info deduplication
 
 // ── CDN URL Cache ─────────────────────────────────────────────────────────────
 // Cache --get-url results so N users downloading same video = 1 YouTube API hit.
@@ -103,6 +104,7 @@ const PLATFORM_PATTERNS: Record<string, RegExp[]> = {
   TikTok: [/tiktok\.com\//],
   Snapchat: [/snapchat\.com/, /story\.snapchat\.com/],
   Instagram: [/instagram\.com\/(p|reel|tv)\//],
+  Twitter: [/twitter\.com\/\w+\/status\/\d+/, /x\.com\/\w+\/status\/\d+/, /t\.co\//],
 };
 
 // ── TikTok URL Normalizer ─────────────────────────────────────────────────────
@@ -1080,7 +1082,7 @@ router.post("/info", async (req, res) => {
   const platform = detectPlatform(url);
   if (platform === "Unknown") {
     res.status(400).json({
-      error: "Unsupported platform. We support YouTube, TikTok and Snapchat.",
+      error: "Unsupported platform. We support YouTube, TikTok, Twitter/X, Instagram, and Snapchat.",
     });
     return;
   }
@@ -1089,6 +1091,7 @@ router.post("/info", async (req, res) => {
   const isTikTok = platform === "TikTok";
   const isSnapchat = platform === "Snapchat";
   const isInstagram = platform === "Instagram";
+  const isTwitter = platform === "Twitter";
 
   const runInfo = async (clientFlag = "", extraFlags = ""): Promise<string> => {
     const bin = getYtDlpBin();
@@ -1198,6 +1201,141 @@ router.post("/info", async (req, res) => {
           });
         }
         return res.status(422).json({ error: "Unable to fetch Instagram video. Make sure it's a public post or reel." });
+      }
+    }
+
+    // ── Twitter / X: yt-dlp guest-token extractor + XFF anti-detection ───────
+    if (isTwitter) {
+      try {
+      // t.co short URLs: follow redirect to get real twitter.com URL
+      let twitterUrl = url;
+      if (/t\.co\//.test(url)) {
+        try {
+          const { stdout: resolved } = await execAsync(
+            `curl -sI --max-redirs 5 -o /dev/null -w "%{url_effective}" "${url}"`,
+            { timeout: 8000 }
+          );
+          if (resolved && resolved.trim()) twitterUrl = resolved.trim();
+        } catch { /* use original URL */ }
+      }
+
+      const cached = getCached(twitterUrl);
+      let twInfo: any;
+      if (cached) {
+        req.log.info("cache hit (twitter)");
+        twInfo = JSON.parse(cached);
+      } else {
+        // Rate-limit Twitter API calls (prevents guest-token exhaustion)
+        await twitterRateLimiter.acquire();
+
+        const existing = twInFlight.get(twitterUrl);
+        if (existing) {
+          req.log.info("twitter in-flight dedup hit");
+          twInfo = JSON.parse(await existing);
+        } else {
+          const fetchPromise = (async (): Promise<string> => {
+            const bin = getYtDlpBin();
+            const xffFlag = getXffFlag(); // rotate X-Forwarded-For across 14 countries
+            const cmd = `"${bin}" --dump-json --no-playlist --no-warnings --socket-timeout 20 ${xffFlag} "${twitterUrl}"`;
+            const { stdout } = await execAsync(cmd, { timeout: 35000 });
+            return stdout.trim().split('\n')[0]; // first JSON line only
+          })();
+          twInFlight.set(twitterUrl, fetchPromise);
+          try {
+            const raw = await fetchPromise;
+            twInfo = JSON.parse(raw);
+            setCache(twitterUrl, raw, CACHE_TTL_LONG_MS);
+          } catch (ytErr: any) {
+            twInFlight.delete(twitterUrl);
+            const errMsg: string = ytErr?.stderr || ytErr?.message || "";
+            if (errMsg.includes("No video could be found")) {
+              return res.status(422).json({
+                error: "Is tweet mein koi video nahi hai. Sirf video wale tweets ka link paste karo.",
+                errorCode: "TWITTER_NO_VIDEO",
+              });
+            }
+            if (errMsg.includes("does not exist") || errMsg.includes("404")) {
+              return res.status(422).json({
+                error: "Ye tweet nahi mila — ho sakta hai delete ho gaya ho ya private ho.",
+                errorCode: "TWITTER_NOT_FOUND",
+              });
+            }
+            throw ytErr; // re-throw for generic handler
+          } finally {
+            twInFlight.delete(twitterUrl);
+          }
+        }
+      }
+
+      // Parse video formats — Twitter typically has 720p / 480p / 360p variants
+      const videoFormats: Array<{ formatId: string; quality: string; label: string; type: "video"; filesize: null; badge: string | null }> = [];
+      const seenHeights = new Set<number>();
+
+      const rawFormats: any[] = twInfo.formats || [];
+      // Sort by height descending, then bitrate descending
+      const vidFmts = rawFormats
+        .filter((f: any) => f.ext === "mp4" && f.height && f.vcodec !== "none" && f.url)
+        .sort((a: any, b: any) => (b.height - a.height) || ((b.tbr || 0) - (a.tbr || 0)));
+
+      for (const f of vidFmts) {
+        const h: number = f.height;
+        if (seenHeights.has(h)) continue;
+        seenHeights.add(h);
+        const isFirst = videoFormats.length === 0;
+        videoFormats.push({
+          formatId: `twitter:${h}`,
+          quality: h >= 720 ? "HD" : h >= 480 ? "SD" : "Low",
+          label: `Video ${h}p${h >= 720 ? " (Best)" : ""}`,
+          type: "video" as const,
+          filesize: null,
+          badge: isFirst ? (h >= 720 ? "HD" : "Best") : null,
+        });
+      }
+
+      if (videoFormats.length === 0) {
+        return res.status(422).json({
+          error: "Is tweet mein koi video nahi mila. Sirf video tweets ka link paste karo.",
+          errorCode: "TWITTER_NO_VIDEO",
+        });
+      }
+
+      // Always offer audio extraction
+      videoFormats.push({
+        formatId: "twitter:audio",
+        quality: "MP3",
+        label: "Audio Only (MP3)",
+        type: "audio" as any,
+        filesize: null,
+        badge: null,
+      });
+
+      return res.json({
+        url: twitterUrl,
+        title: twInfo.title || twInfo.description || "Twitter Video",
+        uploader: twInfo.uploader || twInfo.uploader_id || null,
+        thumbnail: twInfo.thumbnail || null,
+        duration: twInfo.duration || null,
+        platform,
+        formats: videoFormats,
+      });
+      } catch (twitterErr: any) {
+        const errMsg: string = twitterErr?.stderr || twitterErr?.message || "";
+        if (errMsg.includes("No video could be found")) {
+          return res.status(422).json({
+            error: "Is tweet mein koi video nahi hai. Sirf video wale tweets ka link paste karo.",
+            errorCode: "TWITTER_NO_VIDEO",
+          });
+        }
+        if (errMsg.includes("does not exist") || errMsg.includes("404")) {
+          return res.status(422).json({
+            error: "Ye tweet nahi mila — ho sakta hai delete ho gaya ho ya private ho.",
+            errorCode: "TWITTER_NOT_FOUND",
+          });
+        }
+        req.log.error({ err: twitterErr }, "Twitter fetch error");
+        return res.status(422).json({
+          error: "Twitter video nahi mila. Dobara try karo ya check karo ke tweet public ho.",
+        });
       }
     }
 
@@ -1360,6 +1498,65 @@ router.post("/download", async (req, res) => {
         });
       } else {
         res.status(422).json({ error: "Failed to get Instagram video. Make sure it's a public post or reel." });
+      }
+      return;
+    }
+  }
+
+  // ── Twitter / X: yt-dlp CDN URL → proxy through server ──────────────────
+  if (/twitter\.com\/\w+\/status\/\d+|x\.com\/\w+\/status\/\d+/.test(url)) {
+    try {
+      const isAudioReq = formatId === "twitter:audio";
+      const heightStr = formatId.replace("twitter:", "");
+      const height = parseInt(heightStr, 10);
+
+      // Build yt-dlp format selector
+      let fmtSelector: string;
+      if (isAudioReq) {
+        fmtSelector = "bestaudio/best";
+      } else if (!isNaN(height)) {
+        fmtSelector = `best[height<=${height}][ext=mp4]/best[height<=${height}]/best[ext=mp4]/best`;
+      } else {
+        fmtSelector = "best[ext=mp4]/best";
+      }
+
+      // CDN URL cache key
+      const cdnKey = `twitter:${url}:${formatId}`;
+      const cachedCdn = getCachedCdnUrls(cdnKey);
+      let cdnUrl: string;
+
+      if (cachedCdn && cachedCdn[0]) {
+        cdnUrl = cachedCdn[0];
+      } else {
+        // Rate-limit Twitter CDN URL fetches
+        await twitterRateLimiter.acquire();
+        const bin = getYtDlpBin();
+        const xffFlag = getXffFlag();
+        const { stdout } = await execAsync(
+          `"${bin}" --get-url --no-playlist --no-warnings --socket-timeout 20 -f "${fmtSelector}" ${xffFlag} "${url}"`,
+          { timeout: 35000 }
+        );
+        cdnUrl = stdout.trim().split("\n")[0];
+        if (!cdnUrl) throw new Error("No CDN URL returned");
+        setCachedCdnUrls(cdnKey, [cdnUrl]);
+      }
+
+      if (isAudioReq) {
+        // Extract audio via ffmpeg on the server
+        const streamUrl = `/api/video/stream?snap_cdn=${encodeURIComponent(cdnUrl)}&audio=true&bitrate=192`;
+        res.json({ downloadUrl: streamUrl, filename: "twitter_audio.mp3" });
+      } else {
+        // Proxy video — Twitter CDN (video.twimg.com) needs server-side fetch
+        const streamUrl = `/api/video/stream?cdn_proxy=${encodeURIComponent(cdnUrl)}&cdn_filename=${encodeURIComponent("twitter_video.mp4")}`;
+        res.json({ downloadUrl: streamUrl, filename: "twitter_video.mp4" });
+      }
+      return;
+    } catch (err: any) {
+      const msg = err?.message || "";
+      if (msg.includes("No video")) {
+        res.status(422).json({ error: "Is tweet mein video nahi mila." });
+      } else {
+        res.status(422).json({ error: "Twitter video download nahi ho saka. Dobara try karo." });
       }
       return;
     }
