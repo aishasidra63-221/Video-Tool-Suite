@@ -2,6 +2,28 @@ import { Link, useLocation } from "wouter";
 import { useState } from "react";
 import { Menu, X } from "lucide-react";
 
+function Logo() {
+  return (
+    <div className="flex items-center gap-2">
+      <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#6c63ff] to-[#00d4ff] flex items-center justify-center shadow-lg shadow-violet-500/20 group-hover:shadow-violet-500/40 transition-shadow">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M3 3L13 8L3 13V3Z" fill="white" />
+        </svg>
+      </div>
+      <div className="flex items-baseline gap-1" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
+        <span className="text-[17px] font-700 tracking-tight text-white leading-none">Video</span>
+        <span className="text-[17px] font-700 tracking-tight leading-none" style={{
+          background: "linear-gradient(to right, #6c63ff, #00d4ff)",
+          WebkitBackgroundClip: "text",
+          WebkitTextFillColor: "transparent",
+          backgroundClip: "text",
+        }}>Tools</span>
+        <span className="text-[10px] font-600 px-1.5 py-0.5 rounded-md bg-violet-500/20 text-violet-300 leading-none ml-0.5 tracking-wide border border-violet-500/30">PRO</span>
+      </div>
+    </div>
+  );
+}
+
 export function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex flex-col min-h-screen">
@@ -42,8 +64,8 @@ function Navbar() {
   return (
     <header className="sticky top-0 z-50 w-full border-b border-white/10 bg-background/80 backdrop-blur-md">
       <div className="container mx-auto px-4 h-16 flex items-center justify-between">
-        <Link href="/" className="flex items-center gap-2">
-          <span className="text-xl font-bold text-gradient">VideoTools Pro</span>
+        <Link href="/" className="flex items-center gap-2 group">
+          <Logo />
         </Link>
 
         <nav className="hidden md:flex gap-6">
@@ -84,8 +106,8 @@ function Footer() {
       <div className="container mx-auto px-4">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-8 mb-8">
           <div className="col-span-1 md:col-span-2">
-            <Link href="/" className="inline-block mb-4">
-              <span className="text-xl font-bold text-gradient">VideoTools Pro</span>
+            <Link href="/" className="inline-block mb-4 group">
+              <Logo />
             </Link>
             <p className="text-muted-foreground text-sm max-w-sm">
               Download videos from any platform, free forever. The fastest, most reliable video
