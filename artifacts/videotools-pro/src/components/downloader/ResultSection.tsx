@@ -165,6 +165,43 @@ export function ResultSection({
                   </button>
                 )}
               </>
+            ) : errorCode === "TIKTOK_PROFILE_URL" || errorCode === "TIKTOK_NO_VIDEO_ID" ? (
+              <>
+                <div className="w-16 h-16 flex items-center justify-center rounded-full bg-[#010101] border-2 border-white/10 mb-4 text-3xl">
+                  🎵
+                </div>
+                <h3 className="text-2xl font-bold text-white mb-1">Wrong TikTok Link</h3>
+                <p className="text-red-300 mb-6 max-w-sm text-sm">
+                  Yeh profile ka link hai — VIDEO ka link chahiye.
+                </p>
+                <div className="w-full max-w-sm bg-white/5 border border-white/10 rounded-2xl p-4 mb-6 text-left">
+                  <p className="text-white/60 text-xs uppercase tracking-wider mb-3 font-semibold">Sahi link kaise lein</p>
+                  <div className="space-y-3">
+                    {[
+                      { step: "1", text: "TikTok app kholo" },
+                      { step: "2", text: "Jo video download karni hai woh open karo" },
+                      { step: "3", text: "Share button dabao (arrow icon)" },
+                      { step: "4", text: '"Copy Link" tap karo' },
+                      { step: "5", text: "Woh link yahan paste karo" },
+                    ].map(({ step, text }) => (
+                      <div key={step} className="flex items-center gap-3">
+                        <span className="w-6 h-6 rounded-full bg-primary/80 text-white text-xs font-bold flex items-center justify-center shrink-0">{step}</span>
+                        <span className="text-white/80 text-sm">{text}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-4 pt-3 border-t border-white/10">
+                    <p className="text-white/40 text-xs mb-1">Sahi URL ka format:</p>
+                    <code className="text-green-400 text-xs break-all">tiktok.com/@username/video/1234567890</code>
+                  </div>
+                </div>
+                <button
+                  onClick={onReset}
+                  className="flex items-center gap-2 bg-primary/80 hover:bg-primary text-white px-6 py-3 rounded-xl font-semibold transition-colors shadow"
+                >
+                  Naya Link Paste Karo
+                </button>
+              </>
             ) : (
               <>
                 <AlertTriangle className="w-16 h-16 text-red-500 mb-4" />

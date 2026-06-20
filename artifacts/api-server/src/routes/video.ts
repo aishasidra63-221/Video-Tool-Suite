@@ -163,13 +163,12 @@ function normalizeTikTokUrl(rawUrl: string): Promise<string> {
           return;
         }
 
-        // Case 2: aweme_id in query param (common Android share format)
+        // Case 2: aweme_id / item_id / video_id in query param
         // e.g. https://www.tiktok.com/@user?aweme_id=7123456789
         const awemeId = parsed.searchParams.get("aweme_id") ||
                         parsed.searchParams.get("item_id") ||
                         parsed.searchParams.get("video_id");
         if (awemeId && /^\d+$/.test(awemeId)) {
-          // Extract username from path if available, else build generic URL
           const userMatch = parsed.pathname.match(/^\/@([^/]+)/);
           if (userMatch) {
             resolve(`https://www.tiktok.com/@${userMatch[1]}/video/${awemeId}`);
@@ -179,10 +178,41 @@ function normalizeTikTokUrl(rawUrl: string): Promise<string> {
           return;
         }
 
-        // Case 3: profile URL or unknown format — pass raw URL to TikWM
-        // TikWM may still resolve it; we don't hard-reject here
-        // Just strip tracking params we know are useless, keep sec_uid etc.
-        // for TikWM context
+        // Case 3: _t share-token URL  →  follow redirect to get actual video URL
+        // e.g. https://www.tiktok.com/@user?_t=ZS-97LW&_r=1
+        // TikTok server redirects this to the actual /@user/video/ID URL
+        const tToken = parsed.searchParams.get("_t");
+        if (tToken) {
+          const redirectReq = https.request({
+            hostname: "www.tiktok.com",
+            path: parsed.pathname + parsed.search,
+            method: "GET",
+            headers: {
+              "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 TikTok/28.0.0",
+              "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+              "Accept-Language": "en-US,en;q=0.9",
+            },
+          }, (redirectRes) => {
+            const location = redirectRes.headers["location"] as string | undefined;
+            if (location && location.includes("/video/")) {
+              try {
+                const loc = new URL(location.startsWith("http") ? location : "https://www.tiktok.com" + location);
+                resolve(`https://www.tiktok.com${loc.pathname}`);
+              } catch {
+                resolve(location);
+              }
+            } else {
+              // No redirect — pass raw URL
+              resolve(rawUrl);
+            }
+          });
+          redirectReq.on("error", () => resolve(rawUrl));
+          redirectReq.setTimeout(8000, () => { redirectReq.destroy(); resolve(rawUrl); });
+          redirectReq.end();
+          return;
+        }
+
+        // Case 4: unknown format — pass raw URL to TikWM, keep sec_uid for context
         const keepParams = ["sec_uid", "user_id", "aweme_id", "item_id"];
         const kept = new URLSearchParams();
         for (const key of keepParams) {
