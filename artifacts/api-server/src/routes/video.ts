@@ -1351,9 +1351,30 @@ router.post("/info", async (req, res) => {
       const formats: Array<{
         formatId: string; quality: string; label: string;
         type: "video" | "audio"; filesize: number | null; badge: string | null;
+        _urlKey?: string;
       }> = [];
-      if (tk.hdplay) formats.push({ formatId: "tiktok:hd", quality: "HD", label: "HD Video (no watermark)", type: "video", filesize: tk.hd_size || null, badge: "HD" });
-      if (tk.play)   formats.push({ formatId: "tiktok:sd", quality: "SD", label: "Standard (no watermark)", type: "video", filesize: tk.size || null, badge: null });
+      // Determine which URL is actually higher quality by comparing file sizes.
+      // TikWM's field names can be misleading — the `play` URL (with hd=1) is
+      // sometimes larger/better than `hdplay`. Label based on actual size.
+      const playSize = tk.size || 0;
+      const hdplaySize = tk.hd_size || 0;
+      const playIsLarger = playSize >= hdplaySize;
+
+      if (tk.hdplay && tk.play) {
+        // Both available — label by size (larger = HD, smaller = SD)
+        const hdFormat = playIsLarger
+          ? { id: "tiktok:hd", url: "play",   size: tk.size   || null }
+          : { id: "tiktok:hd", url: "hdplay", size: tk.hd_size || null };
+        const sdFormat = playIsLarger
+          ? { id: "tiktok:sd", url: "hdplay", size: tk.hd_size || null }
+          : { id: "tiktok:sd", url: "play",   size: tk.size   || null };
+        formats.push({ formatId: hdFormat.id, quality: "HD", label: "HD Video (no watermark)", type: "video", filesize: hdFormat.size, badge: "HD", _urlKey: hdFormat.url });
+        formats.push({ formatId: sdFormat.id, quality: "SD", label: "Standard (no watermark)", type: "video", filesize: sdFormat.size, badge: null, _urlKey: sdFormat.url });
+      } else if (tk.play) {
+        formats.push({ formatId: "tiktok:hd", quality: "HD", label: "HD Video (no watermark)", type: "video", filesize: tk.size || null, badge: "HD", _urlKey: "play" });
+      } else if (tk.hdplay) {
+        formats.push({ formatId: "tiktok:hd", quality: "HD", label: "HD Video (no watermark)", type: "video", filesize: tk.hd_size || null, badge: "HD", _urlKey: "hdplay" });
+      }
       if (tk.music)  formats.push({ formatId: "tiktok:audio", quality: "audio", label: "Audio (MP3)", type: "audio", filesize: null, badge: null });
       return res.json({
         url, title: tk.title || "TikTok Video",
@@ -1874,11 +1895,15 @@ router.post("/download", async (req, res) => {
       }
       let directUrl: string;
       let filename: string;
+      // Same size-based logic as /info: larger file = HD, smaller = SD
+      const dlPlaySize = tk.size || 0;
+      const dlHdplaySize = tk.hd_size || 0;
+      const dlPlayIsLarger = dlPlaySize >= dlHdplaySize;
       if (formatId === "tiktok:hd") {
-        directUrl = tk.hdplay || tk.play;
+        directUrl = dlPlayIsLarger ? (tk.play || tk.hdplay) : (tk.hdplay || tk.play);
         filename = "tiktok_hd.mp4";
       } else if (formatId === "tiktok:sd") {
-        directUrl = tk.play;
+        directUrl = dlPlayIsLarger ? (tk.hdplay || tk.play) : (tk.play || tk.hdplay);
         filename = "tiktok.mp4";
       } else {
         directUrl = tk.music;
