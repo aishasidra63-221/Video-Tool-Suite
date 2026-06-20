@@ -28,7 +28,7 @@ export default function Disclaimer() {
 
         <h2>4. Not Affiliated with Platforms</h2>
         <p>
-          VideoTools Pro is an independent project and is <strong>not affiliated, associated, authorized, endorsed by, or in any way officially connected with YouTube, TikTok, Instagram, Facebook, Snapchat, Twitter/X, or any of their subsidiaries or affiliates.</strong> All product names, logos, and brands are property of their respective owners.
+          VideoTools Pro is an independent project and is <strong>not affiliated, associated, authorized, endorsed by, or in any way officially connected with YouTube, TikTok, Snapchat, or any of their subsidiaries or affiliates.</strong> All product names, logos, and brands are property of their respective owners.
         </p>
 
         <h2>5. No Guarantee of Service</h2>

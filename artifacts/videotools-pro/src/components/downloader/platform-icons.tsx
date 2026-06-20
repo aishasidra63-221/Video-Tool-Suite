@@ -83,22 +83,6 @@ export const PLATFORMS = [
     supports: "No Watermark, HD, Audio",
   },
   {
-    id: "twitter",
-    name: "Twitter / X",
-    IconComponent: XIcon,
-    color: "#ffffff",
-    hoverBorder: "hover:border-white/60",
-    supports: "Videos, GIFs, Clips",
-  },
-  {
-    id: "instagram",
-    name: "Instagram",
-    IconComponent: InstagramIcon,
-    color: "#E1306C",
-    hoverBorder: "hover:border-[#E1306C]/60",
-    supports: "Reels, Posts, Video",
-  },
-  {
     id: "snapchat",
     name: "Snapchat",
     IconComponent: SnapchatIcon,
