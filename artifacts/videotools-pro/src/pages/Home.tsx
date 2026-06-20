@@ -13,18 +13,23 @@ export default function Home() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [lastUrl, setLastUrl] = useState<string>("");
+  const [mediaType, setMediaType] = useState<"video" | "audio">("video");
 
-  const fetchInfo = (url: string) => {
+  const fetchInfo = (url: string, type: "video" | "audio") => {
     setVideoData(null);
     setErrorMsg(null);
     setErrorCode(null);
     setLastUrl(url);
+    setMediaType(type);
 
     getVideoInfo.mutate(
       { data: { url } },
       {
         onSuccess: (data) => {
           setVideoData(data);
+          setTimeout(() => {
+            document.getElementById("result-section")?.scrollIntoView({ behavior: "smooth" });
+          }, 100);
         },
         onError: (err: any) => {
           setErrorCode(err?.response?.data?.errorCode || null);
@@ -32,6 +37,9 @@ export default function Home() {
             err?.response?.data?.error ||
               "Failed to fetch video information. Please check the URL and try again.",
           );
+          setTimeout(() => {
+            document.getElementById("result-section")?.scrollIntoView({ behavior: "smooth" });
+          }, 100);
         },
       },
     );
@@ -54,8 +62,9 @@ export default function Home() {
           error={errorMsg}
           errorCode={errorCode}
           isLoading={getVideoInfo.isPending}
+          mediaType={mediaType}
           onReset={handleReset}
-          onRetry={lastUrl ? () => fetchInfo(lastUrl) : undefined}
+          onRetry={lastUrl ? () => fetchInfo(lastUrl, mediaType) : undefined}
         />
       </div>
 

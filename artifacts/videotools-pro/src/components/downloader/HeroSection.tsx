@@ -1,20 +1,28 @@
 import { detectPlatform, isValidUrl } from "@/lib/video-utils";
 import { useState, useRef } from "react";
-import { Download, X, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
-import { motion } from "framer-motion";
+import { Download, X, AlertCircle, Loader2, Film, Music } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
 import { PLATFORMS } from "./platform-icons";
 
 export { PLATFORMS };
 
-export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) => void, isPending: boolean }) {
+export function HeroSection({
+  onSubmit,
+  isPending,
+}: {
+  onSubmit: (url: string, mediaType: "video" | "audio") => void;
+  isPending: boolean;
+}) {
   const [url, setUrl] = useState("");
+  const [mediaType, setMediaType] = useState<"video" | "audio" | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const platformId = detectPlatform(url);
-  const platform = PLATFORMS.find(p => p.id === platformId);
+  const platform = PLATFORMS.find((p) => p.id === platformId);
   const isUrlValid = isValidUrl(url);
-  const showSuccess = url.length > 0 && isUrlValid && !!platformId;
-  const showError = url.length > 0 && (!isUrlValid || !platformId);
+  const urlOk = url.length > 0 && isUrlValid && !!platformId;
+  const showUrlError = url.length > 0 && (!isUrlValid || !platformId);
+  const canDownload = urlOk && !!mediaType;
 
   const handleChipClick = () => {
     inputRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -32,8 +40,8 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
   };
 
   const handleSubmit = () => {
-    if (!url || isPending) return;
-    onSubmit(url);
+    if (!canDownload || isPending || !mediaType) return;
+    onSubmit(url, mediaType);
   };
 
   return (
@@ -43,7 +51,9 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
         animate={{ opacity: 1, y: 0 }}
         className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full glass mb-8"
       >
-        <span className="text-xs font-bold tracking-wider text-white/90">⚡ FREE • FAST • NO SIGNUP REQUIRED</span>
+        <span className="text-xs font-bold tracking-wider text-white/90">
+          ⚡ FREE • FAST • NO SIGNUP REQUIRED
+        </span>
       </motion.div>
 
       <motion.h1
@@ -62,7 +72,8 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
         transition={{ delay: 0.2 }}
         className="text-lg md:text-xl text-muted-foreground mb-10 max-w-2xl mx-auto"
       >
-        The fastest, most reliable video downloader. No watermarks, no registration, completely free.
+        The fastest, most reliable video downloader. No watermarks, no
+        registration, completely free.
       </motion.p>
 
       {/* Platform chips */}
@@ -88,16 +99,22 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
         })}
       </motion.div>
 
-      {/* URL Input */}
+      {/* Main Card */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.4 }}
-        className="max-w-3xl mx-auto w-full glass rounded-3xl p-3 md:p-5 mb-8 shadow-2xl relative overflow-hidden"
+        className="max-w-3xl mx-auto w-full glass rounded-3xl p-4 md:p-6 mb-8 shadow-2xl relative overflow-hidden"
       >
         <div className="absolute inset-0 bg-gradient-to-r from-primary/10 to-secondary/10 pointer-events-none" />
-        <div className="relative flex flex-col md:flex-row items-center gap-3">
-          <div className="relative w-full flex-1">
+
+        {/* Step 1: URL Input */}
+        <div className="relative mb-4">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="w-5 h-5 rounded-full bg-primary/80 text-white text-xs font-bold flex items-center justify-center shrink-0">1</span>
+            <span className="text-sm font-semibold text-white/70">Paste your URL</span>
+          </div>
+          <div className="relative flex items-center">
             <input
               ref={inputRef}
               type="text"
@@ -105,75 +122,126 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
               onChange={(e) => setUrl(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
               placeholder="Paste YouTube, TikTok or Snapchat URL here..."
-              className={`w-full bg-black/50 border-2 rounded-2xl px-4 py-5 md:py-6 text-white placeholder:text-white/40 focus:outline-none transition-all text-lg shadow-inner pl-6 ${url ? 'pr-14' : 'pr-28'} ${
-                showSuccess ? 'border-green-500/50 focus:border-green-500' :
-                showError   ? 'border-red-500/50 focus:border-red-500' :
-                              'border-white/10 focus:border-primary/50'
+              className={`w-full bg-black/50 border-2 rounded-2xl px-4 py-4 text-white placeholder:text-white/40 focus:outline-none transition-all text-base shadow-inner ${url ? "pr-12" : "pr-24"} ${
+                urlOk
+                  ? "border-green-500/50 focus:border-green-500"
+                  : showUrlError
+                  ? "border-red-500/50 focus:border-red-500"
+                  : "border-white/10 focus:border-primary/50"
               }`}
             />
-
             <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1">
               {url ? (
                 <button
                   type="button"
                   onClick={() => { setUrl(""); inputRef.current?.focus(); }}
                   className="text-white/50 hover:text-white transition-colors p-1.5 rounded-lg hover:bg-white/10"
-                  title="Clear"
                 >
-                  <X className="w-5 h-5" />
+                  <X className="w-4 h-4" />
                 </button>
               ) : (
                 <button
                   type="button"
                   onClick={handlePaste}
-                  className="flex items-center gap-1.5 text-white/70 hover:text-white transition-colors px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-sm font-semibold"
-                  title="Paste URL"
+                  className="flex items-center gap-1 text-white/70 hover:text-white transition-colors px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-sm font-semibold"
                 >
                   Paste
                 </button>
               )}
             </div>
           </div>
-
-          <button
-            disabled={!url || isPending}
-            onClick={handleSubmit}
-            className="w-full md:w-auto bg-gradient-primary hover-shimmer text-white px-8 py-5 md:py-6 rounded-2xl font-bold text-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 shrink-0 shadow-[0_0_20px_rgba(108,99,255,0.4)]"
-          >
-            {isPending ? (
-              <Loader2 className="w-6 h-6 animate-spin" />
-            ) : (
-              <>
-                <Download className="w-6 h-6" />
-                Download Now
-              </>
-            )}
-          </button>
+          {showUrlError && (
+            <div className="mt-2 flex items-center gap-2 text-red-400 text-sm">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>Please enter a valid YouTube, TikTok or Snapchat URL</span>
+            </div>
+          )}
+          {urlOk && platform && (
+            <div className="mt-2 flex items-center gap-2 text-green-400 text-sm">
+              <platform.IconComponent className="w-4 h-4 shrink-0" />
+              <span>{platform.name} URL detected ✓</span>
+            </div>
+          )}
         </div>
 
-        {showError && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="mt-3 text-left px-2 flex items-center gap-2 text-red-400">
-            <AlertCircle className="w-4 h-4" />
-            <span className="text-sm">Please enter a valid YouTube, TikTok or Snapchat URL</span>
-          </motion.div>
-        )}
-        {showSuccess && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="mt-3 text-left px-2 flex items-center gap-2 text-green-400">
-            <CheckCircle2 className="w-4 h-4" />
-            <span className="text-sm">{platform?.name} URL detected — ready to download!</span>
-          </motion.div>
-        )}
+        {/* Step 2: Video or Audio selection */}
+        <AnimatePresence>
+          {urlOk && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              className="overflow-hidden"
+            >
+              <div className="flex items-center gap-2 mb-3">
+                <span className="w-5 h-5 rounded-full bg-primary/80 text-white text-xs font-bold flex items-center justify-center shrink-0">2</span>
+                <span className="text-sm font-semibold text-white/70">What do you want to download?</span>
+              </div>
+              <div className="grid grid-cols-2 gap-3 mb-4">
+                <button
+                  type="button"
+                  onClick={() => setMediaType("video")}
+                  className={`flex flex-col items-center justify-center gap-2 py-5 rounded-2xl border-2 transition-all duration-200 font-semibold ${
+                    mediaType === "video"
+                      ? "bg-primary/20 border-primary text-white shadow-[0_0_20px_rgba(108,99,255,0.3)]"
+                      : "bg-white/5 border-white/10 text-white/60 hover:border-white/30 hover:text-white hover:bg-white/10"
+                  }`}
+                >
+                  <Film className={`w-8 h-8 ${mediaType === "video" ? "text-primary" : ""}`} />
+                  <span className="text-base">Video</span>
+                  <span className="text-xs text-white/40 font-normal">720p • 1080p • 1440p</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMediaType("audio")}
+                  className={`flex flex-col items-center justify-center gap-2 py-5 rounded-2xl border-2 transition-all duration-200 font-semibold ${
+                    mediaType === "audio"
+                      ? "bg-secondary/20 border-secondary text-white shadow-[0_0_20px_rgba(78,205,196,0.3)]"
+                      : "bg-white/5 border-white/10 text-white/60 hover:border-white/30 hover:text-white hover:bg-white/10"
+                  }`}
+                >
+                  <Music className={`w-8 h-8 ${mediaType === "audio" ? "text-secondary" : ""}`} />
+                  <span className="text-base">Audio Only</span>
+                  <span className="text-xs text-white/40 font-normal">MP3 • High Quality</span>
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Download Button */}
+        <button
+          disabled={!canDownload || isPending}
+          onClick={handleSubmit}
+          className="w-full bg-gradient-primary hover-shimmer text-white px-8 py-4 rounded-2xl font-bold text-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-3 shadow-[0_0_20px_rgba(108,99,255,0.4)]"
+        >
+          {isPending ? (
+            <>
+              <Loader2 className="w-5 h-5 animate-spin" />
+              Fetching...
+            </>
+          ) : (
+            <>
+              <Download className="w-5 h-5" />
+              {!urlOk
+                ? "Paste a URL above"
+                : !mediaType
+                ? "Select Video or Audio"
+                : `Download ${mediaType === "video" ? "Video" : "Audio"} Now`}
+            </>
+          )}
+        </button>
       </motion.div>
 
+      {/* Badges */}
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ delay: 0.5 }}
         className="flex flex-wrap justify-center gap-3"
       >
-        {/* Badge 1: No Sign-up */}
-        <div className="group flex items-center gap-2.5 px-5 py-2.5 rounded-2xl bg-gradient-to-br from-violet-500/10 to-purple-500/5 border border-violet-500/20 hover:border-violet-400/40 transition-all duration-300 hover:scale-105 shadow-[0_0_12px_rgba(139,92,246,0.08)]">
-          <span className="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-lg bg-violet-500/20 group-hover:bg-violet-500/30 transition-colors">
+        <div className="group flex items-center gap-2.5 px-5 py-2.5 rounded-2xl bg-gradient-to-br from-violet-500/10 to-purple-500/5 border border-violet-500/20 hover:border-violet-400/40 transition-all duration-300 hover:scale-105">
+          <span className="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-lg bg-violet-500/20">
             <svg viewBox="0 0 20 20" fill="none" className="w-4 h-4 text-violet-400" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
               <path d="M10 2a4 4 0 100 8 4 4 0 000-8z"/>
               <path d="M3 18c0-3.314 3.134-6 7-6s7 2.686 7 6"/>
@@ -186,9 +254,8 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
           </div>
         </div>
 
-        {/* Badge 2: Downloads count */}
-        <div className="group flex items-center gap-2.5 px-5 py-2.5 rounded-2xl bg-gradient-to-br from-emerald-500/10 to-teal-500/5 border border-emerald-500/20 hover:border-emerald-400/40 transition-all duration-300 hover:scale-105 shadow-[0_0_12px_rgba(16,185,129,0.08)]">
-          <span className="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-lg bg-emerald-500/20 group-hover:bg-emerald-500/30 transition-colors">
+        <div className="group flex items-center gap-2.5 px-5 py-2.5 rounded-2xl bg-gradient-to-br from-emerald-500/10 to-teal-500/5 border border-emerald-500/20 hover:border-emerald-400/40 transition-all duration-300 hover:scale-105">
+          <span className="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-lg bg-emerald-500/20">
             <svg viewBox="0 0 20 20" fill="none" className="w-4 h-4 text-emerald-400" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
               <path d="M10 3v10M6 9l4 4 4-4"/>
               <path d="M4 16h12"/>
@@ -200,9 +267,8 @@ export function HeroSection({ onSubmit, isPending }: { onSubmit: (url: string) =
           </div>
         </div>
 
-        {/* Badge 3: Safe & Secure */}
-        <div className="group flex items-center gap-2.5 px-5 py-2.5 rounded-2xl bg-gradient-to-br from-sky-500/10 to-blue-500/5 border border-sky-500/20 hover:border-sky-400/40 transition-all duration-300 hover:scale-105 shadow-[0_0_12px_rgba(14,165,233,0.08)]">
-          <span className="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-lg bg-sky-500/20 group-hover:bg-sky-500/30 transition-colors">
+        <div className="group flex items-center gap-2.5 px-5 py-2.5 rounded-2xl bg-gradient-to-br from-sky-500/10 to-blue-500/5 border border-sky-500/20 hover:border-sky-400/40 transition-all duration-300 hover:scale-105">
+          <span className="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-lg bg-sky-500/20">
             <svg viewBox="0 0 20 20" fill="none" className="w-4 h-4 text-sky-400" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
               <path d="M10 2l6 2.5v5c0 3.5-2.5 6-6 7.5C4.5 15.5 2 13 2 9.5v-5L10 2z"/>
               <path d="M7 10l2 2 4-4"/>

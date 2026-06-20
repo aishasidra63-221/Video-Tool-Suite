@@ -3,28 +3,14 @@ import { useGetDownloadUrl } from "@workspace/api-client-react";
 import { formatDuration, formatBytes, detectPlatform } from "@/lib/video-utils";
 import { PLATFORMS } from "./platform-icons";
 import { motion, AnimatePresence } from "framer-motion";
-import { Download, Film, Music, AlertTriangle, RefreshCw, ImageDown, Image } from "lucide-react";
+import { Download, AlertTriangle, RefreshCw, ImageDown, Image, Film, Music } from "lucide-react";
 import { VideoInfo } from "@workspace/api-client-react/src/generated/api.schemas";
 
-// Smart thumbnail: direct URL → proxy URL → icon placeholder
 function SmartThumbnail({ src, alt, platform }: { src: string; alt: string; platform: string }) {
   const [stage, setStage] = useState<"direct" | "proxy" | "failed">("direct");
   const triedProxy = useRef(false);
-
-  const isInstagram = platform === "Instagram" ||
-    src.includes("cdninstagram") || src.includes("fbcdn");
-
   const proxyUrl = `/api/video/thumbnail?url=${encodeURIComponent(src)}`;
-
-  // Stage 1: try direct (browser may have cookies / no CORS issue for img tags)
-  // Stage 2: try proxy (server fetches with proper headers)
-  // Stage 3: placeholder
-
-  const displaySrc = stage === "direct"
-    ? (isInstagram ? proxyUrl : src)   // Instagram always start with proxy — faster
-    : stage === "proxy"
-      ? proxyUrl
-      : null;
+  const displaySrc = stage === "direct" ? src : stage === "proxy" ? proxyUrl : null;
 
   const handleError = () => {
     if (stage === "direct" && !triedProxy.current) {
@@ -55,11 +41,37 @@ function SmartThumbnail({ src, alt, platform }: { src: string; alt: string; plat
   );
 }
 
+function getFilteredFormats(
+  formats: VideoInfo["formats"],
+  mediaType: "video" | "audio"
+) {
+  if (mediaType === "audio") {
+    return formats.filter((f) => f.type === "audio").slice(0, 2);
+  }
+
+  const videoFormats = formats.filter((f) => f.type === "video");
+
+  const PREFERRED = ["1440p", "1080p", "720p"];
+  const preferred = PREFERRED.map((q) =>
+    videoFormats.find(
+      (f) =>
+        f.quality === q ||
+        f.quality.startsWith(q.replace("p", "")) ||
+        f.label?.toLowerCase().includes(q.replace("p", ""))
+    )
+  ).filter(Boolean) as VideoInfo["formats"];
+
+  if (preferred.length >= 2) return preferred;
+
+  return videoFormats.slice(0, 3);
+}
+
 export function ResultSection({
   info,
   error,
   errorCode,
   isLoading,
+  mediaType,
   onReset,
   onRetry,
 }: {
@@ -67,10 +79,10 @@ export function ResultSection({
   error: string | null;
   errorCode?: string | null;
   isLoading: boolean;
+  mediaType: "video" | "audio";
   onReset: () => void;
   onRetry?: () => void;
 }) {
-  const [activeTab, setActiveTab] = useState<"video" | "audio">("video");
   const [downloadingFormatId, setDownloadingFormatId] = useState<string | null>(null);
   const [downloadingThumb, setDownloadingThumb] = useState(false);
   const getDownloadUrl = useGetDownloadUrl();
@@ -82,18 +94,10 @@ export function ResultSection({
       { data: { url, formatId } },
       {
         onSuccess: (data) => {
-          const dlUrl = data.downloadUrl;
-          // window.location.href works on both desktop and mobile:
-          // browser sees Content-Disposition: attachment → starts download,
-          // stays on the current page (no navigation away).
-          // window.open() is blocked by mobile popup blockers when called
-          // from an async callback (not in the original user gesture).
-          window.location.href = dlUrl;
+          window.location.href = data.downloadUrl;
           setTimeout(() => setDownloadingFormatId(null), 4000);
         },
-        onError: () => {
-          setDownloadingFormatId(null);
-        },
+        onError: () => setDownloadingFormatId(null),
       }
     );
   };
@@ -111,10 +115,10 @@ export function ResultSection({
     setTimeout(() => setDownloadingThumb(false), 3000);
   };
 
-
   if (!isLoading && !info && !error) return null;
 
   const platform = info ? PLATFORMS.find((p) => p.id === detectPlatform(info.url)) : null;
+  const displayFormats = info ? getFilteredFormats(info.formats, mediaType) : [];
 
   return (
     <section className="w-full max-w-4xl mx-auto px-4 pb-20">
@@ -151,17 +155,15 @@ export function ResultSection({
                 </div>
                 <h3 className="text-2xl font-bold text-white mb-2">Server Busy ⏳</h3>
                 <p className="text-yellow-200 mb-8 max-w-md">{error}</p>
-                <div className="flex items-center gap-3 flex-wrap justify-center">
-                  {onRetry && (
-                    <button
-                      onClick={onRetry}
-                      className="flex items-center gap-2 bg-yellow-500/80 hover:bg-yellow-500 text-white px-6 py-3 rounded-xl font-semibold transition-colors shadow"
-                    >
-                      <RefreshCw className="w-4 h-4" />
-                      Dobara Try Karo
-                    </button>
-                  )}
-                </div>
+                {onRetry && (
+                  <button
+                    onClick={onRetry}
+                    className="flex items-center gap-2 bg-yellow-500/80 hover:bg-yellow-500 text-white px-6 py-3 rounded-xl font-semibold transition-colors shadow"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    Dobara Try Karo
+                  </button>
+                )}
               </>
             ) : (
               <>
@@ -197,7 +199,7 @@ export function ResultSection({
             animate={{ opacity: 1, y: 0 }}
             className="glass rounded-3xl overflow-hidden shadow-2xl"
           >
-            {/* Platform + Title + Uploader Header */}
+            {/* Platform + Title Header */}
             <div className="flex items-start gap-3 px-6 pt-6 pb-4 border-b border-white/10">
               {platform ? (
                 <div
@@ -212,7 +214,7 @@ export function ResultSection({
                   {info.platform}
                 </div>
               )}
-              <div className="flex flex-col gap-0.5 min-w-0">
+              <div className="flex flex-col gap-0.5 min-w-0 flex-1">
                 {info.uploader && (
                   <span className="text-sm font-semibold text-primary/90 leading-tight truncate">
                     @{info.uploader}
@@ -222,10 +224,19 @@ export function ResultSection({
                   {info.title}
                 </h3>
               </div>
+              {/* Media type badge */}
+              <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold shrink-0 ${
+                mediaType === "video"
+                  ? "bg-primary/20 text-primary border border-primary/30"
+                  : "bg-secondary/20 text-secondary border border-secondary/30"
+              }`}>
+                {mediaType === "video" ? <Film className="w-3.5 h-3.5" /> : <Music className="w-3.5 h-3.5" />}
+                {mediaType === "video" ? "Video" : "Audio"}
+              </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-5 gap-0">
-              {/* Left Column: Thumbnail */}
+              {/* Left: Thumbnail */}
               <div className="md:col-span-2 p-6 bg-white/5 md:border-r border-white/5">
                 <div className="relative rounded-xl overflow-hidden aspect-video bg-black mb-4 shadow-lg">
                   {info.thumbnail ? (
@@ -246,7 +257,6 @@ export function ResultSection({
                     </div>
                   )}
                 </div>
-
                 <button
                   onClick={() => handleThumbnailDownload(info.thumbnail || "")}
                   disabled={!info.thumbnail || downloadingThumb}
@@ -261,27 +271,22 @@ export function ResultSection({
                 </button>
               </div>
 
-              {/* Right Column: Download Options */}
+              {/* Right: Download Options */}
               <div className="md:col-span-3 p-6 flex flex-col">
-                <div className="flex bg-white/5 rounded-xl p-1 mb-5">
-                  <button
-                    onClick={() => setActiveTab("video")}
-                    className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-colors ${activeTab === "video" ? "bg-primary text-white shadow-md" : "text-white/60 hover:text-white"}`}
-                  >
-                    <Film className="w-4 h-4" /> Video
-                  </button>
-                  <button
-                    onClick={() => setActiveTab("audio")}
-                    className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-colors ${activeTab === "audio" ? "bg-secondary text-white shadow-md" : "text-white/60 hover:text-white"}`}
-                  >
-                    <Music className="w-4 h-4" /> Audio
-                  </button>
+                <div className="flex items-center gap-2 mb-5">
+                  {mediaType === "video" ? (
+                    <Film className="w-5 h-5 text-primary" />
+                  ) : (
+                    <Music className="w-5 h-5 text-secondary" />
+                  )}
+                  <h4 className="text-base font-bold text-white">
+                    {mediaType === "video" ? "Video Quality" : "Audio Quality"}
+                  </h4>
                 </div>
 
-                <div className="flex-1 overflow-y-auto pr-1 custom-scrollbar space-y-3 max-h-[360px]">
-                  {info.formats
-                    .filter((f) => f.type === activeTab)
-                    .map((format, i) => {
+                <div className="space-y-3">
+                  {displayFormats.length > 0 ? (
+                    displayFormats.map((format, i) => {
                       const sizeStr =
                         format.type === "video"
                           ? formatBytes(format.filesize)
@@ -291,14 +296,20 @@ export function ResultSection({
                               const mb = (info.duration * parseInt(m[1])) / 8 / 1024;
                               return mb < 1 ? `~${Math.round(mb * 1024)} KB` : `~${mb.toFixed(0)} MB`;
                             })();
+
+                      const isDownloading = downloadingFormatId === format.formatId;
+
                       return (
-                        <div
+                        <motion.div
                           key={i}
+                          initial={{ opacity: 0, x: 10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ delay: i * 0.07 }}
                           className="flex items-center justify-between p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 transition-colors"
                         >
                           <div className="flex flex-col gap-1">
                             <div className="flex items-center gap-2">
-                              <span className="font-bold text-white text-lg">{format.quality}</span>
+                              <span className="font-bold text-white text-xl">{format.quality}</span>
                               {format.badge && (
                                 <span className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider bg-white/10 text-white/70 uppercase">
                                   {format.badge}
@@ -306,34 +317,41 @@ export function ResultSection({
                               )}
                             </div>
                             <span className="text-xs text-muted-foreground">
-                              {sizeStr ? (
-                                <span className="text-white/60 font-medium">{sizeStr}</span>
-                              ) : null}
-                              {sizeStr ? " • " : ""}
+                              {sizeStr && <span className="text-white/60 font-medium">{sizeStr} • </span>}
                               {format.label}
                             </span>
                           </div>
                           <button
                             onClick={() => handleDownload(info.url, format.formatId)}
                             disabled={!!downloadingFormatId}
-                            className="flex items-center justify-center w-12 h-12 rounded-xl bg-green-500/20 text-green-400 hover:bg-green-500 hover:text-white transition-all shadow-[0_0_10px_rgba(34,197,94,0.2)] hover:shadow-[0_0_20px_rgba(34,197,94,0.4)] disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                            className={`flex items-center justify-center w-12 h-12 rounded-xl transition-all shadow disabled:opacity-50 disabled:cursor-not-allowed shrink-0 ${
+                              mediaType === "video"
+                                ? "bg-green-500/20 text-green-400 hover:bg-green-500 hover:text-white shadow-[0_0_10px_rgba(34,197,94,0.2)] hover:shadow-[0_0_20px_rgba(34,197,94,0.4)]"
+                                : "bg-secondary/20 text-secondary hover:bg-secondary hover:text-white shadow-[0_0_10px_rgba(78,205,196,0.2)] hover:shadow-[0_0_20px_rgba(78,205,196,0.4)]"
+                            }`}
                           >
-                            {downloadingFormatId === format.formatId ? (
+                            {isDownloading ? (
                               <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                             ) : (
                               <Download className="w-5 h-5" />
                             )}
                           </button>
-                        </div>
+                        </motion.div>
                       );
-                    })}
-
-                  {info.formats.filter((f) => f.type === activeTab).length === 0 && (
+                    })
+                  ) : (
                     <div className="text-center py-12 text-muted-foreground text-sm">
-                      No {activeTab} formats available for this video.
+                      No {mediaType} formats available for this video.
                     </div>
                   )}
                 </div>
+
+                <button
+                  onClick={onReset}
+                  className="mt-6 text-sm text-white/40 hover:text-white/70 transition-colors underline underline-offset-2 text-center"
+                >
+                  ← Download another video
+                </button>
               </div>
             </div>
           </motion.div>
