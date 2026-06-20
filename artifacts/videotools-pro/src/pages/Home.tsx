@@ -2,7 +2,6 @@ import { HeroSection } from "@/components/downloader/HeroSection";
 import { ResultSection } from "@/components/downloader/ResultSection";
 import { FeaturesSection } from "@/components/downloader/FeaturesSection";
 import { HowItWorksSection } from "@/components/downloader/HowItWorksSection";
-import { PlatformsSection } from "@/components/downloader/PlatformsSection";
 import { useGetVideoInfo } from "@workspace/api-client-react";
 import { useState } from "react";
 import { VideoInfo } from "@workspace/api-client-react/src/generated/api.schemas";
@@ -70,7 +69,6 @@ export default function Home() {
 
       <HowItWorksSection />
       <FeaturesSection />
-      <PlatformsSection />
     </div>
   );
 }
