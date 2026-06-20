@@ -73,6 +73,7 @@ class Semaphore {
 }
 
 const igSemaphore = new Semaphore(4, 20);  // 4 concurrent, max 20 waiting
+const snapSemaphore = new Semaphore(2, 10); // 2 concurrent — limits Snapchat rate-limiting risk
 
 // ── YouTube concurrency semaphore ─────────────────────────────────────────────
 // Caps simultaneous yt-dlp calls. maxQueue = burst buffer — beyond this we
@@ -275,7 +276,21 @@ function normalizeSnapchatUrl(url: string): string {
   }
 }
 
-function snapHttpGet(url: string, maxRedirects = 8): Promise<string> {
+// Snapchat-specific User-Agents — desktop browsers most trusted by Snapchat CDN
+const SNAP_USER_AGENTS = [
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0",
+];
+function randomSnapUA(): string {
+  return SNAP_USER_AGENTS[Math.floor(Math.random() * SNAP_USER_AGENTS.length)];
+}
+
+// Returns { html, status } — callers can check status to decide whether to retry
+function snapHttpGet(url: string, ua: string, maxRedirects = 8): Promise<{ html: string; status: number }> {
   return new Promise((resolve, reject) => {
     if (maxRedirects <= 0) return reject(new Error("Snapchat: too many redirects"));
     let parsed: URL;
@@ -285,9 +300,9 @@ function snapHttpGet(url: string, maxRedirects = 8): Promise<string> {
       path: parsed.pathname + parsed.search,
       method: "GET",
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "User-Agent": ua,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        // Force English response — prevents localized (Hindi/etc.) og:title like-count strings
+        // Force English — prevents localized og:title strings
         "Accept-Language": "en-US,en;q=1.0",
         "Accept-Encoding": "identity",
         "Cache-Control": "no-cache",
@@ -299,21 +314,44 @@ function snapHttpGet(url: string, maxRedirects = 8): Promise<string> {
         "Upgrade-Insecure-Requests": "1",
       },
     }, (res) => {
-      if (res.statusCode && [301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+      const status = res.statusCode || 0;
+      if ([301, 302, 303, 307, 308].includes(status) && res.headers.location) {
         const loc = res.headers.location.startsWith("http")
           ? res.headers.location
           : "https://www.snapchat.com" + res.headers.location;
-        snapHttpGet(loc, maxRedirects - 1).then(resolve).catch(reject);
+        snapHttpGet(loc, ua, maxRedirects - 1).then(resolve).catch(reject);
         return;
       }
       let data = "";
       res.on("data", (chunk) => (data += chunk));
-      res.on("end", () => resolve(data));
+      res.on("end", () => resolve({ html: data, status }));
     });
     req.on("error", reject);
     req.setTimeout(20000, () => { req.destroy(); reject(new Error("Snapchat fetch timeout")); });
     req.end();
   });
+}
+
+// Detect bot-block pages (Cloudflare, CAPTCHA, JS challenge, etc.)
+function isSnapBotBlock(html: string, status: number): boolean {
+  if (status === 403 || status === 429) return true;
+  if (html.length < 800) return true; // suspiciously short — likely a block page
+  const lower = html.toLowerCase();
+  return (
+    lower.includes("captcha") ||
+    lower.includes("cf-browser-verification") ||
+    lower.includes("just a moment") ||
+    lower.includes("checking your browser") ||
+    lower.includes("enable javascript and cookies") ||
+    lower.includes("ddos-guard") ||
+    lower.includes("access denied") ||
+    (lower.includes("403") && !lower.includes("og:video"))
+  );
+}
+
+// Small delay helper for retry backoff
+function delay(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 // Recursively find all string values matching a predicate
@@ -329,9 +367,17 @@ function deepFindStrings(obj: unknown, predicate: (s: string) => boolean, result
   return results;
 }
 
-async function snapchatFetch(rawUrl: string): Promise<SnapchatData> {
-  const videoUrl = normalizeSnapchatUrl(rawUrl);
-  const html = await snapHttpGet(videoUrl);
+// Core fetch attempt with a specific UA — returns parsed data or throws
+async function snapchatFetchAttempt(videoUrl: string, ua: string): Promise<SnapchatData> {
+  const { html, status } = await snapHttpGet(videoUrl, ua);
+  if (isSnapBotBlock(html, status)) {
+    throw Object.assign(new Error(`Snapchat bot-block (status ${status})`), { botBlock: true });
+  }
+  return parseSnapchatHtml(html, videoUrl);
+}
+
+// Parse HTML into SnapchatData (extracted so retry loop can call it without re-fetching)
+function parseSnapchatHtml(html: string, videoUrl: string): SnapchatData {
 
   // ── Step 1: og:video meta tag — ALWAYS points to the correct current video ─
   // This is the most reliable source; Snapchat sets it to the exact CDN URL
@@ -463,6 +509,29 @@ async function snapchatFetch(rawUrl: string): Promise<SnapchatData> {
     videoUrl: foundVideoUrl,
     duration: null,
   };
+}
+
+// ── snapchatFetch: retries up to 3 times with different UAs on bot-block ─────
+async function snapchatFetch(rawUrl: string): Promise<SnapchatData> {
+  const videoUrl = normalizeSnapchatUrl(rawUrl);
+  const maxAttempts = 3;
+  // Shuffle UA list so each attempt uses a fresh random one (no repeats)
+  const shuffled = [...SNAP_USER_AGENTS].sort(() => Math.random() - 0.5);
+  let lastError: Error = new Error("Snapchat: all retry attempts failed");
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const ua = shuffled[attempt % shuffled.length];
+    try {
+      return await snapchatFetchAttempt(videoUrl, ua);
+    } catch (err: any) {
+      lastError = err;
+      // Only retry on bot-block errors; propagate real errors immediately
+      if (!err.botBlock) throw err;
+      // Wait before next retry: 800ms, 1600ms
+      if (attempt < maxAttempts - 1) await delay(800 * (attempt + 1));
+    }
+  }
+  throw lastError;
 }
 
 // ── Instagram Scraper ─────────────────────────────────────────────────────────
@@ -1186,7 +1255,7 @@ router.post("/info", async (req, res) => {
       });
     }
 
-    // ── Snapchat: scrape __NEXT_DATA__ like competitors do ───────────────────
+    // ── Snapchat: scrape with UA rotation + retry on bot-block ───────────────
     if (isSnapchat) {
       const cached = getCached(url);
       let snap: SnapchatData;
@@ -1194,8 +1263,13 @@ router.post("/info", async (req, res) => {
         req.log.info("cache hit (snapchat)");
         snap = JSON.parse(cached);
       } else {
-        snap = await snapchatFetch(url);
-        setCache(url, JSON.stringify(snap), CACHE_TTL_LONG_MS);
+        await snapSemaphore.acquire(25000);
+        try {
+          snap = await snapchatFetch(url);
+          setCache(url, JSON.stringify(snap), CACHE_TTL_LONG_MS);
+        } finally {
+          snapSemaphore.release();
+        }
       }
       const snapFormats = [
         { formatId: "snapchat:video",    quality: "HD",  label: "HD Video (Original)", type: "video" as const, filesize: null, badge: "HD" },
@@ -1631,8 +1705,13 @@ router.post("/download", async (req, res) => {
       if (cached) {
         snap = JSON.parse(cached);
       } else {
-        snap = await snapchatFetch(normalizedSnapUrl);
-        setCache(cacheKey, JSON.stringify(snap), CACHE_TTL_LONG_MS);
+        await snapSemaphore.acquire(25000);
+        try {
+          snap = await snapchatFetch(normalizedSnapUrl);
+          setCache(cacheKey, JSON.stringify(snap), CACHE_TTL_LONG_MS);
+        } finally {
+          snapSemaphore.release();
+        }
       }
       if (!snap.videoUrl) {
         res.status(422).json({ error: "Snapchat video URL not available." });
