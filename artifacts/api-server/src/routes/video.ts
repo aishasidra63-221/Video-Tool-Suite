@@ -23,26 +23,62 @@ function randomUA(): string {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
-// ── Concurrency Semaphore (caps simultaneous Instagram fetches) ───────────────
+// ── Concurrency Semaphore ─────────────────────────────────────────────────────
+// Bounded queue with per-request timeout. When maxQueue is full or timeoutMs
+// elapses, acquire() rejects with code="SERVER_BUSY" so we can return 503
+// immediately instead of making users wait minutes for a slot.
 class Semaphore {
   private slots: number;
-  private queue: Array<() => void> = [];
-  constructor(slots: number) { this.slots = slots; }
-  acquire(): Promise<void> {
+  private readonly maxQueue: number;
+  private queue: Array<{ resolve: () => void; reject: (e: Error) => void; timer?: ReturnType<typeof setTimeout> }> = [];
+
+  constructor(slots: number, maxQueue = 200) {
+    this.slots = slots;
+    this.maxQueue = maxQueue;
+  }
+
+  acquire(timeoutMs?: number): Promise<void> {
     if (this.slots > 0) { this.slots--; return Promise.resolve(); }
-    return new Promise((resolve) => this.queue.push(resolve));
+    // Queue full → reject immediately so the caller gets 503 right away
+    if (this.queue.length >= this.maxQueue) {
+      return Promise.reject(Object.assign(new Error("Server busy"), { code: "SERVER_BUSY" }));
+    }
+    return new Promise<void>((resolve, reject) => {
+      const entry = { resolve, reject, timer: undefined as ReturnType<typeof setTimeout> | undefined };
+      if (timeoutMs) {
+        entry.timer = setTimeout(() => {
+          const idx = this.queue.indexOf(entry);
+          if (idx >= 0) this.queue.splice(idx, 1);
+          reject(Object.assign(new Error("Server busy (timeout)"), { code: "SERVER_BUSY" }));
+        }, timeoutMs);
+      }
+      this.queue.push(entry);
+    });
   }
+
   release(): void {
-    if (this.queue.length > 0) { this.queue.shift()!(); }
-    else { this.slots++; }
+    const entry = this.queue.shift();
+    if (entry) {
+      if (entry.timer) clearTimeout(entry.timer);
+      entry.resolve(); // slot transfers to first waiter — count unchanged
+    } else {
+      this.slots++;
+    }
   }
+
+  /** How many requests are currently waiting for a slot */
+  get queueDepth(): number { return this.queue.length; }
+  /** How many slots are currently in use */
+  get activeCount(): number { return (this as any)._totalSlots - this.slots; }
 }
-const igSemaphore = new Semaphore(4); // max 4 concurrent Instagram fetches
+
+const igSemaphore = new Semaphore(4, 20);  // 4 concurrent, max 20 waiting
 
 // ── YouTube concurrency semaphore ─────────────────────────────────────────────
-// Caps simultaneous yt-dlp info calls — too many parallel calls = server IP flagged
-const ytInfoSemaphore = new Semaphore(4);   // max 4 concurrent info fetches
-const ytStreamSemaphore = new Semaphore(3); // max 3 concurrent stream/downloads
+// Caps simultaneous yt-dlp calls. maxQueue = burst buffer — beyond this we
+// return 503 immediately rather than silently queue everyone for minutes.
+const ytInfoSemaphore   = new Semaphore(4, 30); // 4 concurrent, max 30 queued
+const ytStreamSemaphore = new Semaphore(3, 20); // 3 concurrent, max 20 queued
 
 // ── In-flight deduplication (same URL → share one fetch) ─────────────────────
 // Prevents N concurrent users hitting the same URL from making N requests
@@ -1346,16 +1382,19 @@ router.post("/info", async (req, res) => {
       req.log.info("cache hit");
       stdout = cached;
     } else if (isYouTube) {
-      // ── YouTube: in-flight dedup + semaphore + client rotation ────────────
-      // Same URL from N concurrent users → 1 yt-dlp call, rest wait for result
+      // ── YouTube: in-flight dedup + bounded semaphore + client rotation ────
+      // Same URL from N concurrent users → 1 yt-dlp call, rest await same promise.
+      // If queue is full (>30 waiting) or wait >25 s → immediate 503, not hang.
       const existing = ytInFlight.get(url);
       if (existing) {
         req.log.info("YouTube in-flight dedup hit");
         stdout = await existing;
       } else {
-        const fetchPromise = ytInfoSemaphore.acquire().then(async () => {
+        const fetchPromise = (async (): Promise<string> => {
+          // Acquire with 25 s timeout; throws {code:"SERVER_BUSY"} if queue full or elapsed
+          await ytInfoSemaphore.acquire(25_000);
           try {
-            await ytRateLimiter.acquire(); // cap server-wide YouTube calls
+            await ytRateLimiter.acquire(); // global 20/min cap
             let out: string;
             try {
               const { result } = await withYtClientRotationFast((flag) => runInfo(flag));
@@ -1378,6 +1417,9 @@ router.post("/info", async (req, res) => {
             ytInfoSemaphore.release();
             ytInFlight.delete(url);
           }
+        })().catch(err => {
+          ytInFlight.delete(url); // always clean up, even on acquire failure
+          throw err;
         });
         ytInFlight.set(url, fetchPromise);
         stdout = await fetchPromise;
@@ -1418,6 +1460,14 @@ router.post("/info", async (req, res) => {
       formats,
     });
   } catch (err) {
+    // ── SERVER_BUSY: queue full or per-request timeout hit ───────────────────
+    if ((err as any)?.code === "SERVER_BUSY") {
+      return res.status(503).json({
+        error: "Server busy hai — bahut saare log ek saath hain. Thodi der (10-15 sec) baad dobara try karo. ⏳",
+        errorCode: "SERVER_BUSY",
+      });
+    }
+
     let stderr: string;
     if (err instanceof AggregateError) {
       stderr = err.errors
@@ -1959,7 +2009,16 @@ router.get("/stream", async (req, res) => {
       return;
     }
 
-    await ytStreamSemaphore.acquire();
+    // Bounded queue: max 20 waiting + 20s timeout → reject with SERVER_BUSY if overloaded
+    try {
+      await ytStreamSemaphore.acquire(20_000);
+    } catch (busyErr: any) {
+      if (busyErr?.code === "SERVER_BUSY") {
+        res.status(503).json({ error: "Server busy — thodi der baad dobara try karo. ⏳", errorCode: "SERVER_BUSY" });
+        return;
+      }
+      throw busyErr;
+    }
     const releaseSemaphore = () => { ytStreamSemaphore.release(); };
     req.on("close", releaseSemaphore);
 
