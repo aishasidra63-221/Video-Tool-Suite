@@ -21,7 +21,8 @@ export const HealthCheckResponse = zod.object({
  * @summary Get video info and available formats
  */
 export const GetVideoInfoBody = zod.object({
-  "url": zod.string().describe('The video URL to fetch info for')
+  "url": zod.string().describe('The video URL to fetch info for'),
+  "mediaType": zod.enum(["video", "audio"]).optional().describe('Filter: return only video or audio formats')
 })
 
 export const GetVideoInfoResponse = zod.object({

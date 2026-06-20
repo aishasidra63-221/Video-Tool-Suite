@@ -23,7 +23,7 @@ export default function Home() {
     setMediaType(type);
 
     getVideoInfo.mutate(
-      { data: { url } },
+      { data: { url, mediaType: type } },
       {
         onSuccess: (data) => {
           setVideoData(data);

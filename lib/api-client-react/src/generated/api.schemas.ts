@@ -12,6 +12,8 @@ export interface HealthStatus {
 export interface VideoInfoInput {
   /** The video URL to fetch info for */
   url: string;
+  /** Filter: return only video or audio formats */
+  mediaType?: 'video' | 'audio';
 }
 
 /**

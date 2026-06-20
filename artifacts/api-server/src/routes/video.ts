@@ -1108,7 +1108,7 @@ router.post("/info", async (req, res) => {
     return;
   }
 
-  const { url } = parsed.data;
+  const { url, mediaType } = parsed.data;
 
   if (!isValidUrl(url)) {
     res.status(400).json({ error: "Invalid URL format." });
@@ -1176,7 +1176,8 @@ router.post("/info", async (req, res) => {
       return res.json({
         url, title: tk.title || "TikTok Video",
         thumbnail: tk.cover || null, duration: tk.duration || null,
-        platform, formats,
+        platform,
+        formats: mediaType ? formats.filter(f => f.type === mediaType) : formats,
       });
     }
 
@@ -1191,6 +1192,11 @@ router.post("/info", async (req, res) => {
         snap = await snapchatFetch(url);
         setCache(url, JSON.stringify(snap), CACHE_TTL_LONG_MS);
       }
+      const snapFormats = [
+        { formatId: "snapchat:video",    quality: "HD",  label: "HD Video (Original)", type: "video" as const, filesize: null, badge: "HD" },
+        { formatId: "snapchat:video_sd", quality: "480p", label: "Compressed (480p) • Small File", type: "video" as const, filesize: null, badge: "Light" },
+        { formatId: "snapchat:audio",    quality: "MP3", label: "Audio Only (MP3)",    type: "audio" as const, filesize: null, badge: null },
+      ];
       return res.json({
         url,
         title: snap.title || "Snapchat Video",
@@ -1198,11 +1204,7 @@ router.post("/info", async (req, res) => {
         thumbnail: snap.thumbnail || null,
         duration: snap.duration || null,
         platform,
-        formats: [
-          { formatId: "snapchat:video",    quality: "HD",  label: "HD Video (Original)", type: "video" as const, filesize: null, badge: "HD" },
-          { formatId: "snapchat:video_sd", quality: "480p", label: "Compressed (480p) • Small File", type: "video" as const, filesize: null, badge: "Light" },
-          { formatId: "snapchat:audio",    quality: "MP3", label: "Audio Only (MP3)",    type: "audio" as const, filesize: null, badge: null },
-        ],
+        formats: mediaType ? snapFormats.filter(f => f.type === mediaType) : snapFormats,
       });
     }
 
@@ -1353,7 +1355,7 @@ router.post("/info", async (req, res) => {
         thumbnail: twInfo.thumbnail || null,
         duration: twInfo.duration || null,
         platform,
-        formats: videoFormats,
+        formats: mediaType ? videoFormats.filter(f => f.type === mediaType) : videoFormats,
       });
       } catch (twitterErr: any) {
         const errMsg: string = twitterErr?.stderr || twitterErr?.message || "";
@@ -1438,18 +1440,19 @@ router.post("/info", async (req, res) => {
     // Estimated filesize = typical_bitrate_bps * duration / 8  (bytes)
     const dur = info.duration ?? 0;
     const estSize = (kbps: number) => dur > 0 ? Math.round(kbps * 1000 / 8 * dur) : null;
-    const formats = isYouTube
+    const allFormats = isYouTube
       ? [
-          { formatId: "yt_2160", quality: "4K",    label: "4K Ultra HD",     type: "video" as const, filesize: estSize(15000), badge: "4K" },
-          { formatId: "yt_1440", quality: "1440p",  label: "1440p QHD",       type: "video" as const, filesize: estSize(8000),  badge: "QHD" },
-          { formatId: "yt_1080", quality: "1080p",  label: "1080p Full HD",   type: "video" as const, filesize: estSize(4000),  badge: "Full HD" },
-          { formatId: "yt_720",  quality: "720p",   label: "720p HD",         type: "video" as const, filesize: estSize(2500),  badge: "HD" },
-          { formatId: "yt_480",  quality: "480p",   label: "480p SD",         type: "video" as const, filesize: estSize(1200),  badge: null },
+          { formatId: "yt_1440", quality: "1440p", label: "1440p QHD",     type: "video" as const, filesize: estSize(8000),  badge: "QHD" },
+          { formatId: "yt_1080", quality: "1080p", label: "1080p Full HD", type: "video" as const, filesize: estSize(4000),  badge: "Full HD" },
+          { formatId: "yt_720",  quality: "720p",  label: "720p HD",       type: "video" as const, filesize: estSize(2500),  badge: "HD" },
           { formatId: "bestaudio:audio:192", quality: "192kbps", label: "MP3 ~192kbps • High Quality", type: "audio" as const, filesize: estSize(192), badge: "Best Quality" },
           { formatId: "bestaudio:audio:128", quality: "128kbps", label: "MP3 ~128kbps • Standard",     type: "audio" as const, filesize: estSize(128), badge: null },
-          { formatId: "bestaudio:audio:64",  quality: "64kbps",  label: "MP3 ~64kbps • Small Size",    type: "audio" as const, filesize: estSize(64),  badge: null },
         ]
       : buildFormats(info.formats);
+
+    const filteredFormats = mediaType
+      ? allFormats.filter(f => f.type === mediaType)
+      : allFormats;
 
     res.json({
       url,
@@ -1458,7 +1461,7 @@ router.post("/info", async (req, res) => {
       thumbnail: info.thumbnail || null,
       duration: info.duration || null,
       platform,
-      formats,
+      formats: filteredFormats,
     });
   } catch (err) {
     // ── SERVER_BUSY: queue full or per-request timeout hit ───────────────────
