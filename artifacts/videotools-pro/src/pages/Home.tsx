@@ -26,9 +26,6 @@ export default function Home() {
       {
         onSuccess: (data) => {
           setVideoData(data);
-          setTimeout(() => {
-            document.getElementById("result-section")?.scrollIntoView({ behavior: "smooth" });
-          }, 100);
         },
         onError: (err: any) => {
           setErrorCode(err?.response?.data?.errorCode || null);
@@ -36,9 +33,6 @@ export default function Home() {
             err?.response?.data?.error ||
               "Failed to fetch video information. Please check the URL and try again.",
           );
-          setTimeout(() => {
-            document.getElementById("result-section")?.scrollIntoView({ behavior: "smooth" });
-          }, 100);
         },
       },
     );

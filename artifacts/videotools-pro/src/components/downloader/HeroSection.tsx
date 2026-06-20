@@ -112,7 +112,7 @@ export function HeroSection({
         <div className="relative mb-4">
           <div className="flex items-center gap-2 mb-2">
             <span className="w-5 h-5 rounded-full bg-primary/80 text-white text-xs font-bold flex items-center justify-center shrink-0">1</span>
-            <span className="text-sm font-semibold text-white/70">Paste your URL</span>
+            <span className="text-sm font-semibold text-white/70">Download Now</span>
           </div>
           <div className="relative flex items-center">
             <input
