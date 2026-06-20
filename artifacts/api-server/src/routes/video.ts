@@ -145,18 +145,52 @@ const PLATFORM_PATTERNS: Record<string, RegExp[]> = {
 };
 
 // ── TikTok URL Normalizer ─────────────────────────────────────────────────────
-// Strips tracking params (?_t=xxx&_r=1) and ensures a clean URL is sent to TikWM.
-// Also resolves vt.tiktok.com short URLs via a browser-spoofed HEAD redirect.
+// Strips tracking params and ensures a clean URL is sent to TikWM.
+// Handles multiple TikTok Android share URL formats:
+//   1. Full video URL:  /@user/video/123456789?_t=abc  →  /@user/video/123456789
+//   2. aweme_id param:  /@user?aweme_id=123456789      →  /@user/video/123456789
+//   3. item_id param:   /?item_id=123456789             →  /@user/video/123456789 (passed raw to TikWM)
+//   4. Short URL:       vm.tiktok.com/XXXX             →  follow redirect
 function normalizeTikTokUrl(rawUrl: string): Promise<string> {
   return new Promise((resolve) => {
     try {
       const parsed = new URL(rawUrl);
 
-      // Already a full video URL — strip tracking query params, keep only video ID path
       if (parsed.hostname === "www.tiktok.com" || parsed.hostname === "tiktok.com") {
-        // e.g. /@user/video/123456789?_t=abc&_r=1  →  /@user/video/123456789
-        const cleanPath = parsed.pathname; // keep path, drop query params
-        resolve(`https://www.tiktok.com${cleanPath}`);
+        // Case 1: path already has video ID  →  strip tracking params
+        if (/\/video\/\d+/.test(parsed.pathname)) {
+          resolve(`https://www.tiktok.com${parsed.pathname}`);
+          return;
+        }
+
+        // Case 2: aweme_id in query param (common Android share format)
+        // e.g. https://www.tiktok.com/@user?aweme_id=7123456789
+        const awemeId = parsed.searchParams.get("aweme_id") ||
+                        parsed.searchParams.get("item_id") ||
+                        parsed.searchParams.get("video_id");
+        if (awemeId && /^\d+$/.test(awemeId)) {
+          // Extract username from path if available, else build generic URL
+          const userMatch = parsed.pathname.match(/^\/@([^/]+)/);
+          if (userMatch) {
+            resolve(`https://www.tiktok.com/@${userMatch[1]}/video/${awemeId}`);
+          } else {
+            resolve(`https://www.tiktok.com/video/${awemeId}`);
+          }
+          return;
+        }
+
+        // Case 3: profile URL or unknown format — pass raw URL to TikWM
+        // TikWM may still resolve it; we don't hard-reject here
+        // Just strip tracking params we know are useless, keep sec_uid etc.
+        // for TikWM context
+        const keepParams = ["sec_uid", "user_id", "aweme_id", "item_id"];
+        const kept = new URLSearchParams();
+        for (const key of keepParams) {
+          const val = parsed.searchParams.get(key);
+          if (val) kept.set(key, val);
+        }
+        const keptStr = kept.toString();
+        resolve(`https://www.tiktok.com${parsed.pathname}${keptStr ? "?" + keptStr : ""}`);
         return;
       }
 
@@ -174,7 +208,6 @@ function normalizeTikTokUrl(rawUrl: string): Promise<string> {
       const req = https.request(reqOpts, (res) => {
         const location = res.headers["location"] as string | undefined;
         if (location && location.includes("tiktok.com") && location.includes("/video/")) {
-          // Resolved to actual video URL — strip query params
           try {
             const loc = new URL(location);
             resolve(`https://www.tiktok.com${loc.pathname}`);
@@ -182,11 +215,10 @@ function normalizeTikTokUrl(rawUrl: string): Promise<string> {
             resolve(location);
           }
         } else {
-          // Redirect didn't give a video URL — pass original URL and let TikWM handle it
           resolve(rawUrl);
         }
       });
-      req.on("error", () => resolve(rawUrl)); // fallback to original on error
+      req.on("error", () => resolve(rawUrl));
       req.setTimeout(8000, () => { req.destroy(); resolve(rawUrl); });
       req.end();
     } catch {
@@ -1270,17 +1302,14 @@ router.post("/info", async (req, res) => {
         });
       }
 
-      // Normalize URL first (follows redirects for vm/m short links)
+      // Normalize URL first (follows redirects for vm/m short links, extracts aweme_id)
       const cleanUrl = await normalizeTikTokUrl(url);
       req.log.info({ original: url, clean: cleanUrl }, "TikTok URL normalized");
 
-      // After normalization, check if we have a valid video ID
-      if (!/\/video\/\d+/.test(cleanUrl)) {
-        return res.status(422).json({
-          error: "Ye TikTok profile URL hai. Kisi specific video ka link chahiye. Video open karo → Share → Copy link.",
-          errorCode: "TIKTOK_NO_VIDEO_ID",
-        });
-      }
+      // If no /video/ID after normalization, still try TikWM — it may resolve the URL.
+      // Only if TikWM also fails do we return the "profile URL" error.
+      const hasVideoId = /\/video\/\d+/.test(cleanUrl);
+      req.log.info({ hasVideoId, cleanUrl }, "TikTok video ID check");
 
       const cacheKey = cleanUrl;
       const cached = getCached(cacheKey);
@@ -1616,7 +1645,20 @@ router.post("/info", async (req, res) => {
     req.log.error({ err: stderr }, "video info failed");
 
     if (isTikTok) {
-      const hint = stderr.includes("rate") ? "Rate limit. 1 second baad try karo." : "TikTok video load nahi hua. URL check karo.";
+      // If we never found a video ID, this was a profile/account URL, not a video URL
+      const cleanedForCheck = url.replace(/[?&].*/,"");
+      const looksLikeProfile = !/\/video\/\d+/.test(cleanedForCheck) &&
+                               !/aweme_id=\d+/.test(url) &&
+                               !/item_id=\d+/.test(url);
+      if (looksLikeProfile) {
+        return res.status(422).json({
+          error: "Ye TikTok profile/account URL lag raha hai — kisi specific VIDEO ka link chahiye. TikTok mein video open karo → share icon → 'Copy Link' → woh link yahan paste karo.",
+          errorCode: "TIKTOK_PROFILE_URL",
+        });
+      }
+      const hint = stderr.toLowerCase().includes("rate") || stderr.toLowerCase().includes("429")
+        ? "TikTok rate limit. 2-3 second baad dobara try karo."
+        : "TikTok video load nahi hua. URL check karo aur dobara try karo.";
       return res.status(422).json({ error: hint });
     }
     if (stderr.includes("Sign in") || stderr.includes("log in") || stderr.includes("login") || stderr.includes("bot")) {
