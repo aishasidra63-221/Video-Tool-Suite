@@ -197,8 +197,38 @@ function normalizeTikTokUrl(rawUrl: string): Promise<string> {
 
 // ── TikWM API Fetch ───────────────────────────────────────────────────────────
 // tikwm.com is the primary and most reliable free TikTok API.
-// api2/api3 subdomains are dead — do not use them.
-function tikwmFetch(videoUrl: string): Promise<TikWMData> {
+// Rotation: randomised UA + Accept-Language per request to avoid fingerprinting.
+// Jitter: 150–600ms random delay before each call so we don't look like a bot.
+// Retry: up to 2 automatic retries with exponential backoff on transient failures.
+
+const TIKWM_UAS = [
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0",
+  "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+];
+
+const TIKWM_ACCEPT_LANGS = [
+  "en-US,en;q=0.9",
+  "en-GB,en;q=0.9",
+  "en-US,en;q=0.8,fr;q=0.5",
+  "de-DE,de;q=0.9,en;q=0.8",
+  "pt-BR,pt;q=0.9,en;q=0.8",
+  "ja-JP,ja;q=0.9,en;q=0.7",
+  "es-ES,es;q=0.9,en;q=0.8",
+];
+
+function randomTikwmUA(): string { return TIKWM_UAS[Math.floor(Math.random() * TIKWM_UAS.length)]; }
+function randomTikwmLang(): string { return TIKWM_ACCEPT_LANGS[Math.floor(Math.random() * TIKWM_ACCEPT_LANGS.length)]; }
+function tikwmJitter(): Promise<void> {
+  const ms = 150 + Math.floor(Math.random() * 450); // 150–600ms
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function tikwmFetchOnce(videoUrl: string): Promise<TikWMData> {
   return new Promise((resolve, reject) => {
     const body = `url=${encodeURIComponent(videoUrl)}&hd=1`;
     const req = https.request({
@@ -208,11 +238,11 @@ function tikwmFetch(videoUrl: string): Promise<TikWMData> {
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
         "Content-Length": Buffer.byteLength(body),
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "User-Agent": randomTikwmUA(),
         "Referer": "https://www.tikwm.com/",
         "Origin": "https://www.tikwm.com",
         "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Language": randomTikwmLang(),
         "sec-fetch-site": "same-origin",
         "sec-fetch-mode": "cors",
       },
@@ -239,6 +269,28 @@ function tikwmFetch(videoUrl: string): Promise<TikWMData> {
     req.write(body);
     req.end();
   });
+}
+
+// Public function — jitter + up to 2 retries with 800ms/1600ms backoff
+async function tikwmFetch(videoUrl: string): Promise<TikWMData> {
+  const TIKWM_PERMANENT_ERRORS = ["does not exist", "not found", "deleted", "private"];
+  const maxAttempts = 3;
+  let lastErr: Error = new Error("TikWM: all attempts failed");
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await tikwmJitter();
+    try {
+      return await tikwmFetchOnce(videoUrl);
+    } catch (err: any) {
+      lastErr = err;
+      const msg: string = (err.message || "").toLowerCase();
+      // Don't retry permanent errors (video deleted, private, etc.)
+      if (TIKWM_PERMANENT_ERRORS.some((s) => msg.includes(s))) throw err;
+      if (attempt < maxAttempts - 1) {
+        await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+      }
+    }
+  }
+  throw lastErr;
 }
 
 interface TikWMData {
@@ -1767,10 +1819,28 @@ router.post("/download", async (req, res) => {
         res.status(422).json({ error: "TikTok download URL not available." });
         return;
       }
-      // Proxy TikTok through our server — TikTok CDN blocks direct browser access
-      // (missing Referer/Origin headers). Server fetches with correct headers and pipes to client.
-      const proxyUrl = `/api/video/stream?cdn_proxy=${encodeURIComponent(directUrl)}&cdn_filename=${encodeURIComponent(filename)}`;
-      res.json({ downloadUrl: proxyUrl, filename });
+      // ── CDN URL strategy ──────────────────────────────────────────────────
+      // TikWM returns its OWN proxy URLs (tikwm.com domain) — these are browser-accessible
+      // without special headers, so give them directly to the user (zero server load).
+      // If TikWM ever returns a raw TikTok CDN URL (v16/v19-webapp.tiktok.com), that
+      // requires Referer spoofing — fall back to our cdn_proxy for that case only.
+      let downloadUrl: string;
+      try {
+        const cdnHost = new URL(directUrl).hostname;
+        const needsProxy = !cdnHost.includes("tikwm.com");
+        if (needsProxy) {
+          downloadUrl = `/api/video/stream?cdn_proxy=${encodeURIComponent(directUrl)}&cdn_filename=${encodeURIComponent(filename)}`;
+          req.log.info({ cdnHost }, "TikTok CDN needs proxy");
+        } else {
+          // tikwm.com URL — browser can access directly, no server bandwidth used
+          downloadUrl = directUrl;
+          req.log.info({ cdnHost }, "TikTok CDN direct link (no proxy needed)");
+        }
+      } catch {
+        // URL parse failed — safe fallback to proxy
+        downloadUrl = `/api/video/stream?cdn_proxy=${encodeURIComponent(directUrl)}&cdn_filename=${encodeURIComponent(filename)}`;
+      }
+      res.json({ downloadUrl, filename });
       return;
     } catch (err) {
       res.status(422).json({ error: "Failed to get TikTok download URL." });
