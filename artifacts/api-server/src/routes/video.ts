@@ -1199,8 +1199,9 @@ router.post("/info", async (req, res) => {
         duration: snap.duration || null,
         platform,
         formats: [
-          { formatId: "snapchat:video", quality: "HD", label: "Video (MP4)", type: "video" as const, filesize: null, badge: "HD" },
-          { formatId: "snapchat:audio", quality: "MP3", label: "Audio (MP3)", type: "audio" as const, filesize: null, badge: null },
+          { formatId: "snapchat:video",    quality: "HD",  label: "HD Video (Original)", type: "video" as const, filesize: null, badge: "HD" },
+          { formatId: "snapchat:video_sd", quality: "480p", label: "Compressed (480p) • Small File", type: "video" as const, filesize: null, badge: "Light" },
+          { formatId: "snapchat:audio",    quality: "MP3", label: "Audio Only (MP3)",    type: "audio" as const, filesize: null, badge: null },
         ],
       });
     }
@@ -1633,10 +1634,14 @@ router.post("/download", async (req, res) => {
         // Extract audio from CDN video stream via ffmpeg
         const streamUrl = `/api/video/stream?snap_cdn=${encodeURIComponent(snap.videoUrl)}&audio=true&bitrate=192`;
         res.json({ downloadUrl: streamUrl, filename: "snapchat_audio.mp3" });
+      } else if (formatId === "snapchat:video_sd") {
+        // Compressed 480p: ffmpeg re-encodes the CDN video to smaller file
+        const streamUrl = `/api/video/stream?snap_cdn=${encodeURIComponent(snap.videoUrl)}&scale=480`;
+        res.json({ downloadUrl: streamUrl, filename: "snapchat_480p.mp4" });
       } else {
-        // Proxy video through server — same CDN proxy used for TikTok, avoids browser CORS/referer issues
+        // HD original: proxy Snapchat CDN response as-is (fastest, no CPU)
         const streamUrl = `/api/video/stream?snap_cdn=${encodeURIComponent(snap.videoUrl)}`;
-        res.json({ downloadUrl: streamUrl, filename: "snapchat_video.mp4" });
+        res.json({ downloadUrl: streamUrl, filename: "snapchat_hd.mp4" });
       }
       return;
     } catch (err) {
@@ -1758,12 +1763,13 @@ router.post("/download", async (req, res) => {
 // Audio: ffmpeg converts to MP3
 // ─────────────────────────────────────────────────────────────────────────────
 router.get("/stream", async (req, res) => {
-  const { url, formatId, audio, bitrate, snap_cdn, cdn_proxy, cdn_filename } = req.query as {
+  const { url, formatId, audio, bitrate, snap_cdn, cdn_proxy, cdn_filename, scale } = req.query as {
     url?: string;
     formatId?: string;
     audio?: string;
     bitrate?: string;
     snap_cdn?: string;
+    scale?: string;
     cdn_proxy?: string;
     cdn_filename?: string;
   };
@@ -1813,12 +1819,13 @@ router.get("/stream", async (req, res) => {
     return;
   }
 
-  // ── Snapchat CDN proxy (video passthrough or audio extraction via ffmpeg) ─
+  // ── Snapchat CDN proxy (video passthrough, compressed re-encode, or audio) ─
   if (snap_cdn) {
     const isSnapAudio = audio === "true";
+    const scaleHeight = scale ? parseInt(scale, 10) : null; // e.g. 480
 
     if (isSnapAudio) {
-      // Audio: extract mp3 via ffmpeg
+      // Audio: extract mp3 via ffmpeg from CDN stream
       const mp3Bitrate = bitrate || "192";
       res.setHeader("Content-Type", "audio/mpeg");
       res.setHeader("Content-Disposition", `attachment; filename="snapchat_audio.mp3"`);
@@ -1834,9 +1841,32 @@ router.get("/stream", async (req, res) => {
       ffmpeg.stderr.on("data", (d: Buffer) => req.log?.info?.({ stderr: d.toString().slice(0, 100) }, "ffmpeg snap audio"));
       ffmpeg.on("error", () => { if (!res.headersSent) res.status(500).end(); });
       req.on("close", () => ffmpeg.kill());
+
+    } else if (scaleHeight) {
+      // Compressed video: ffmpeg re-encodes at target height (e.g. 480p)
+      // -2:480 keeps aspect ratio (portrait Snaps are 9:16, so width auto-computed)
+      // libx264 + aac gives excellent compatibility at ~1/3 the original file size
+      res.setHeader("Content-Type", "video/mp4");
+      res.setHeader("Content-Disposition", `attachment; filename="snapchat_${scaleHeight}p.mp4"`);
+      const ffmpeg = spawn("ffmpeg", [
+        "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "-headers", "Referer: https://www.snapchat.com/\r\nOrigin: https://www.snapchat.com",
+        "-i", snap_cdn,
+        "-vf", `scale=-2:${scaleHeight}`,   // auto-width, target height
+        "-c:v", "libx264",
+        "-preset", "fast",                  // fast encode, reasonable quality
+        "-crf", "26",                       // quality: 26 = ~60% size vs original
+        "-c:a", "aac", "-b:a", "96k",
+        "-movflags", "frag_keyframe+empty_moov", // streamable MP4
+        "-f", "mp4", "pipe:1",
+      ]);
+      ffmpeg.stdout.pipe(res);
+      ffmpeg.stderr.on("data", (d: Buffer) => req.log?.info?.({ stderr: d.toString().slice(0, 100) }, "ffmpeg snap compress"));
+      ffmpeg.on("error", () => { if (!res.headersSent) res.status(500).end(); });
+      req.on("close", () => ffmpeg.kill());
+
     } else {
-      // Video: proxy Snapchat CDN response through server with proper headers
-      // Snapchat CDN URLs are signed GCS buckets — accessible but served more reliably via proxy
+      // HD original: proxy Snapchat CDN response through server as-is (fastest)
       let parsed: URL;
       try { parsed = new URL(snap_cdn); } catch { res.status(400).json({ error: "Invalid snap_cdn URL." }); return; }
       const snapReq = https.request({
@@ -1851,7 +1881,7 @@ router.get("/stream", async (req, res) => {
         },
       }, (upstream) => {
         res.setHeader("Content-Type", upstream.headers["content-type"] || "video/mp4");
-        res.setHeader("Content-Disposition", `attachment; filename="snapchat_video.mp4"`);
+        res.setHeader("Content-Disposition", `attachment; filename="snapchat_hd.mp4"`);
         if (upstream.headers["content-length"]) res.setHeader("Content-Length", upstream.headers["content-length"]);
         upstream.pipe(res);
       });
