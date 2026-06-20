@@ -1323,16 +1323,7 @@ router.post("/info", async (req, res) => {
   try {
     // ── TikTok: use TikWM API (no watermark, no server-IP blocks) ────────────
     if (isTikTok) {
-      // Normalize first — resolves short URLs (vm.tiktok.com, m.tiktok.com etc.)
-      // before we validate the video ID. vt.tiktok.com cannot be resolved server-side.
-      if (/^https?:\/\/vt\.tiktok\.com/.test(url)) {
-        return res.status(422).json({
-          error: "vt.tiktok.com short links nahi khulte. TikTok app mein video open karo → Share → Copy link → woh full link yahan paste karo.",
-          errorCode: "TIKTOK_VT_UNSUPPORTED",
-        });
-      }
-
-      // Normalize URL first (follows redirects for vm/m short links, extracts aweme_id)
+      // Normalize URL first (follows redirects for vm/m/vt short links, extracts aweme_id)
       const cleanUrl = await normalizeTikTokUrl(url);
       req.log.info({ original: url, clean: cleanUrl }, "TikTok URL normalized");
 
