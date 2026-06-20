@@ -364,8 +364,14 @@ interface TikWMData {
   hdplay: string;
   wmplay: string;
   music: string;
+  size?: number;       // SD video file size in bytes
+  hd_size?: number;   // HD video file size in bytes
+  wm_size?: number;   // watermarked video file size in bytes
   music_info?: { title?: string; author?: string };
   author?: { nickname?: string; avatar?: string };
+  play_count?: number;
+  digg_count?: number;
+  region?: string;
 }
 
 // ── Snapchat Scraper — extracts video from __NEXT_DATA__ like competitors ─────
@@ -1346,8 +1352,8 @@ router.post("/info", async (req, res) => {
         formatId: string; quality: string; label: string;
         type: "video" | "audio"; filesize: number | null; badge: string | null;
       }> = [];
-      if (tk.hdplay) formats.push({ formatId: "tiktok:hd", quality: "HD", label: "HD Video (no watermark)", type: "video", filesize: null, badge: "HD" });
-      if (tk.play)   formats.push({ formatId: "tiktok:sd", quality: "SD", label: "Standard (no watermark)", type: "video", filesize: null, badge: null });
+      if (tk.hdplay) formats.push({ formatId: "tiktok:hd", quality: "HD", label: "HD Video (no watermark)", type: "video", filesize: tk.hd_size || null, badge: "HD" });
+      if (tk.play)   formats.push({ formatId: "tiktok:sd", quality: "SD", label: "Standard (no watermark)", type: "video", filesize: tk.size || null, badge: null });
       if (tk.music)  formats.push({ formatId: "tiktok:audio", quality: "audio", label: "Audio (MP3)", type: "audio", filesize: null, badge: null });
       return res.json({
         url, title: tk.title || "TikTok Video",
