@@ -1,71 +1,43 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useGetVideoInfo } from "@workspace/api-client-react";
 import { VideoInfo } from "@workspace/api-client-react/src/generated/api.schemas";
 import { ResultSection } from "@/components/downloader/ResultSection";
-import { Play, CheckCircle2 } from "lucide-react";
+import { Play, CheckCircle2, X, Loader2, Download, AlertCircle } from "lucide-react";
 import { motion } from "framer-motion";
 
-function MiniInput({
-  onSubmit,
-  isPending,
-}: {
-  onSubmit: (url: string) => void;
-  isPending: boolean;
-}) {
-  const [url, setUrl] = useState("");
-
-  const handlePaste = async () => {
-    try {
-      const text = await navigator.clipboard.readText();
-      setUrl(text);
-    } catch {}
-  };
-
-  return (
-    <div className="w-full max-w-2xl mx-auto">
-      <div className="relative flex items-center gap-2">
-        <input
-          type="text"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && url && onSubmit(url)}
-          placeholder="Paste TikTok video URL here..."
-          className="w-full bg-black/50 border-2 border-white/10 focus:border-pink-500/60 rounded-2xl px-4 py-4 text-white placeholder:text-white/40 focus:outline-none transition-all text-base"
-        />
-        {!url && (
-          <button
-            onClick={handlePaste}
-            className="absolute right-[110px] text-xs text-white/50 hover:text-white/80 transition-colors"
-          >
-            Paste
-          </button>
-        )}
-        <button
-          onClick={() => url && onSubmit(url)}
-          disabled={!url || isPending}
-          className="shrink-0 px-6 py-4 rounded-2xl bg-gradient-to-r from-pink-600 to-purple-600 hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold transition-all"
-        >
-          {isPending ? "..." : "Download"}
-        </button>
-      </div>
-    </div>
-  );
+function isTikTokUrl(url: string) {
+  return /tiktok\.com|vm\.tiktok|vt\.tiktok/i.test(url);
 }
 
-export default function TikTokStories() {
+export default function TikTokVideoDownloader() {
   const getVideoInfo = useGetVideoInfo();
   const [videoData, setVideoData] = useState<VideoInfo | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [lastUrl, setLastUrl] = useState("");
+  const [url, setUrl] = useState("");
+  const [showUrlError, setShowUrlError] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  const fetchInfo = (url: string) => {
+  const urlOk = isTikTokUrl(url);
+
+  const handlePaste = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      setUrl(text);
+      setShowUrlError(false);
+    } catch {}
+  };
+
+  const fetchInfo = (submitUrl: string) => {
+    if (!isTikTokUrl(submitUrl)) { setShowUrlError(true); return; }
+    setShowUrlError(false);
     setVideoData(null);
     setErrorMsg(null);
     setErrorCode(null);
-    setLastUrl(url);
+    setLastUrl(submitUrl);
     getVideoInfo.mutate(
-      { data: { url, mediaType: "video" } },
+      { data: { url: submitUrl, mediaType: "video" } },
       {
         onSuccess: (data) => setVideoData(data),
         onError: (err: any) => {
@@ -86,7 +58,7 @@ export default function TikTokStories() {
   const faqs = [
     {
       q: "TikTok video kaise download karte hain?",
-      a: "TikTok pe video open karo. Share button → Copy Link tap karo. Woh link upar paste karo aur Download click karo.",
+      a: "TikTok pe video open karo. Share button → Copy Link tap karo. Woh link upar paste karo aur Download Video click karo.",
     },
     {
       q: "Kya share links bhi kaam karte hain?",
@@ -94,7 +66,7 @@ export default function TikTokStories() {
     },
     {
       q: "Watermark hoga ya nahi?",
-      a: "Bilkul nahi. Hum TikTok ka original watermark-free version dete hain — wahi jo TikTok app ke andar hota hai.",
+      a: "Bilkul nahi. Hum TikTok ka original watermark-free version dete hain.",
     },
     {
       q: "Private videos download ho sakte hain?",
@@ -110,7 +82,7 @@ export default function TikTokStories() {
           animate={{ opacity: 1, y: 0 }}
           className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full glass mb-8"
         >
-          <Play className="w-4 h-4 text-pink-400" />
+          <Play className="w-4 h-4 text-primary" />
           <span className="text-xs font-bold tracking-wider text-white/90">
             TIKTOK VIDEO • HD • NO WATERMARK
           </span>
@@ -120,30 +92,96 @@ export default function TikTokStories() {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
-          className="text-4xl md:text-6xl font-extrabold text-white mb-4 leading-tight"
+          className="text-4xl md:text-6xl lg:text-7xl font-extrabold mb-6 max-w-4xl mx-auto leading-tight tracking-tight"
         >
           TikTok Video{" "}
-          <span className="bg-gradient-to-r from-pink-400 to-purple-400 bg-clip-text text-transparent">
-            Downloader
-          </span>
+          <span className="text-gradient">Downloader</span>
         </motion.h1>
 
         <motion.p
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.2 }}
-          className="text-lg text-white/60 mb-10 max-w-xl"
+          className="text-lg md:text-xl text-muted-foreground mb-10 max-w-2xl mx-auto"
         >
           TikTok videos HD mein download karo — bina watermark, bina account, bilkul free.
         </motion.p>
 
+        {/* Main Card — same as home */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.3 }}
-          className="w-full max-w-2xl"
+          className="max-w-3xl mx-auto w-full glass rounded-3xl p-4 md:p-6 mb-8 shadow-2xl relative overflow-hidden"
         >
-          <MiniInput onSubmit={fetchInfo} isPending={getVideoInfo.isPending} />
+          <div className="absolute inset-0 bg-gradient-to-r from-primary/10 to-secondary/10 pointer-events-none" />
+
+          <div className="relative mb-4">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="w-5 h-5 rounded-full bg-primary/80 text-white text-xs font-bold flex items-center justify-center shrink-0">1</span>
+              <span className="text-sm font-semibold text-white/70">TikTok URL Paste Karo</span>
+            </div>
+            <div className="relative flex items-center">
+              <input
+                ref={inputRef}
+                type="text"
+                value={url}
+                onChange={(e) => { setUrl(e.target.value); setShowUrlError(false); }}
+                onKeyDown={(e) => e.key === "Enter" && fetchInfo(url)}
+                placeholder="Paste TikTok video URL here..."
+                className={`w-full bg-black/50 border-2 rounded-2xl px-4 py-4 text-white placeholder:text-white/40 focus:outline-none transition-all text-base shadow-inner ${url ? "pr-12" : "pr-24"} ${
+                  urlOk
+                    ? "border-green-500/50 focus:border-green-500"
+                    : showUrlError
+                    ? "border-red-500/50 focus:border-red-500"
+                    : "border-white/10 focus:border-primary/50"
+                }`}
+              />
+              <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                {url ? (
+                  <button
+                    type="button"
+                    onClick={() => { setUrl(""); inputRef.current?.focus(); }}
+                    className="text-white/50 hover:text-white transition-colors p-1.5 rounded-lg hover:bg-white/10"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handlePaste}
+                    className="flex items-center gap-1 text-white/70 hover:text-white transition-colors px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-sm font-semibold"
+                  >
+                    Paste
+                  </button>
+                )}
+              </div>
+            </div>
+            {showUrlError && (
+              <div className="mt-2 flex items-center gap-2 text-red-400 text-sm">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>Please enter a valid TikTok URL</span>
+              </div>
+            )}
+          </div>
+
+          <button
+            disabled={!urlOk || getVideoInfo.isPending}
+            onClick={() => fetchInfo(url)}
+            className="w-full bg-gradient-primary hover-shimmer text-white px-8 py-4 rounded-2xl font-bold text-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-3 shadow-[0_0_20px_rgba(108,99,255,0.4)]"
+          >
+            {getVideoInfo.isPending ? (
+              <>
+                <Loader2 className="w-5 h-5 animate-spin" />
+                Fetching...
+              </>
+            ) : (
+              <>
+                <Download className="w-5 h-5" />
+                Download Video
+              </>
+            )}
+          </button>
         </motion.div>
       </section>
 
@@ -154,7 +192,7 @@ export default function TikTokStories() {
           errorCode={errorCode}
           isLoading={getVideoInfo.isPending}
           mediaType="video"
-          onReset={() => { setVideoData(null); setErrorMsg(null); setErrorCode(null); setLastUrl(""); }}
+          onReset={() => { setVideoData(null); setErrorMsg(null); setErrorCode(null); setLastUrl(""); setUrl(""); }}
           onRetry={lastUrl ? () => fetchInfo(lastUrl) : undefined}
         />
       </div>
@@ -167,8 +205,8 @@ export default function TikTokStories() {
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-6">
             {features.map((f, i) => (
               <div key={i} className="glass rounded-2xl p-6 text-center">
-                <div className="w-10 h-10 rounded-full bg-pink-500/20 flex items-center justify-center mx-auto mb-4">
-                  <span className="text-pink-400 font-bold text-lg">✓</span>
+                <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center mx-auto mb-4">
+                  <span className="text-primary font-bold text-lg">✓</span>
                 </div>
                 <h3 className="text-white font-bold mb-2">{f.title}</h3>
                 <p className="text-white/60 text-sm leading-relaxed">{f.desc}</p>
@@ -187,7 +225,7 @@ export default function TikTokStories() {
             {faqs.map((faq, i) => (
               <div key={i} className="glass rounded-2xl p-6">
                 <div className="flex items-start gap-3">
-                  <CheckCircle2 className="w-5 h-5 text-pink-400 shrink-0 mt-0.5" />
+                  <CheckCircle2 className="w-5 h-5 text-primary shrink-0 mt-0.5" />
                   <div>
                     <h3 className="text-white font-semibold mb-2">{faq.q}</h3>
                     <p className="text-white/60 text-sm leading-relaxed">{faq.a}</p>
