@@ -36,29 +36,30 @@ export function HowItWorksSection() {
         </div>
 
         {/* ── Mobile: vertical timeline ── */}
-        <div className="md:hidden relative max-w-xs mx-auto">
-          {/* Vertical line — spans full height of the list */}
-          <div className="absolute left-[2.4rem] top-12 bottom-12 w-0.5 bg-gradient-to-b from-primary/80 via-secondary/60 to-primary/10" />
-
-          <div className="flex flex-col gap-0">
-            {steps.map((step, i) => (
-              <div key={i} className="flex items-start gap-5 py-5 relative">
-                {/* Circle icon — sits on top of the vertical line */}
-                <div className="shrink-0 w-20 h-20 rounded-full bg-[#0a0a0f] border-4 border-white/5 flex items-center justify-center shadow-[0_0_24px_rgba(108,99,255,0.18)] relative z-10">
+        <div className="md:hidden max-w-xs mx-auto">
+          {steps.map((step, i) => (
+            <div key={i} className="flex items-start gap-5">
+              {/* Left column: circle + connector line below */}
+              <div className="flex flex-col items-center shrink-0">
+                <div className="w-20 h-20 rounded-full bg-[#0a0a0f] border-4 border-white/5 flex items-center justify-center shadow-[0_0_24px_rgba(108,99,255,0.18)] relative z-10">
                   <div className="absolute -top-2.5 -right-2.5 w-7 h-7 rounded-full bg-gradient-primary flex items-center justify-center text-xs font-bold text-white shadow-lg">
                     {i + 1}
                   </div>
                   <step.icon className="w-9 h-9 text-white/80" />
                 </div>
-
-                {/* Text */}
-                <div className="pt-4">
-                  <h3 className="text-lg font-bold mb-1">{step.title}</h3>
-                  <p className="text-sm text-muted-foreground leading-relaxed">{step.desc}</p>
-                </div>
+                {/* Vertical connector — only between steps, not after last */}
+                {i < steps.length - 1 && (
+                  <div className="w-0.5 flex-1 min-h-[48px] bg-gradient-to-b from-primary via-secondary/60 to-primary/30" />
+                )}
               </div>
-            ))}
-          </div>
+
+              {/* Right: text */}
+              <div className={`pt-5 pb-8 ${i === steps.length - 1 ? "pb-0" : ""}`}>
+                <h3 className="text-lg font-bold mb-1">{step.title}</h3>
+                <p className="text-sm text-muted-foreground leading-relaxed">{step.desc}</p>
+              </div>
+            </div>
+          ))}
         </div>
 
       </div>
