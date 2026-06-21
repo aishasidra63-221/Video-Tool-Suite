@@ -4,12 +4,20 @@ import { VideoInfo } from "@workspace/api-client-react/src/generated/api.schemas
 import { ResultSection } from "@/components/downloader/ResultSection";
 import { Music, CheckCircle2, X, Loader2, Download, AlertCircle } from "lucide-react";
 import { motion } from "framer-motion";
+import { useSeoMeta } from "@/lib/useSeoMeta";
 
 function isTikTokUrl(url: string) {
   return /tiktok\.com|vm\.tiktok|vt\.tiktok/i.test(url);
 }
 
 export default function TikTokMp3() {
+  useSeoMeta({
+    title: "TikTok to MP3 Converter — Download TikTok Audio Free | VideoTools Pro",
+    description: "Convert any TikTok video to MP3 audio instantly. Free TikTok MP3 downloader — no watermark, no login, high quality audio. Works on mobile & PC.",
+    canonical: "https://videotoolspro.replit.app/download-tiktok-mp3",
+    ogTitle: "TikTok to MP3 — Free TikTok Audio Downloader | VideoTools Pro",
+    ogDescription: "Download TikTok audio as MP3 for free. No watermark, no login needed. Fast & secure TikTok MP3 converter online.",
+  });
   const getVideoInfo = useGetVideoInfo();
   const [videoData, setVideoData] = useState<VideoInfo | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);

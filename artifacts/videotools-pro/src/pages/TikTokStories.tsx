@@ -4,12 +4,20 @@ import { VideoInfo } from "@workspace/api-client-react/src/generated/api.schemas
 import { ResultSection } from "@/components/downloader/ResultSection";
 import { Play, CheckCircle2, X, Loader2, Download, AlertCircle } from "lucide-react";
 import { motion } from "framer-motion";
+import { useSeoMeta } from "@/lib/useSeoMeta";
 
 function isTikTokUrl(url: string) {
   return /tiktok\.com|vm\.tiktok|vt\.tiktok/i.test(url);
 }
 
 export default function TikTokVideoDownloader() {
+  useSeoMeta({
+    title: "TikTok Video Downloader — No Watermark, Free & Fast | VideoTools Pro",
+    description: "Download TikTok videos without watermark in HD quality. Free TikTok video downloader — no login, no watermark, instant save. Works on iPhone & Android.",
+    canonical: "https://videotoolspro.replit.app/download-tiktok-stories",
+    ogTitle: "TikTok Video Downloader No Watermark — Free | VideoTools Pro",
+    ogDescription: "Save TikTok videos without watermark for free. HD quality, no account needed, works on all devices.",
+  });
   const getVideoInfo = useGetVideoInfo();
   const [videoData, setVideoData] = useState<VideoInfo | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
