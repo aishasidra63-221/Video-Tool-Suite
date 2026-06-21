@@ -3,39 +3,56 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/lib/theme";
-import NotFound from "@/pages/not-found";
+import { Suspense, lazy } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import Home from "@/pages/Home";
-import Privacy from "@/pages/Privacy";
-import Terms from "@/pages/Terms";
-import Disclaimer from "@/pages/Disclaimer";
-import Dmca from "@/pages/Dmca";
-import Faq from "@/pages/Faq";
-import Settings from "@/pages/Settings";
-import Blog from "@/pages/Blog";
-import BlogPost from "@/pages/BlogPost";
-import TikTokMp3 from "@/pages/TikTokMp3";
-import TikTokStories from "@/pages/TikTokStories";
 
-const queryClient = new QueryClient();
+// ── Lazy-load all non-home pages so they don't bloat the initial bundle ──
+const NotFound      = lazy(() => import("@/pages/not-found"));
+const Privacy       = lazy(() => import("@/pages/Privacy"));
+const Terms         = lazy(() => import("@/pages/Terms"));
+const Disclaimer    = lazy(() => import("@/pages/Disclaimer"));
+const Dmca          = lazy(() => import("@/pages/Dmca"));
+const Faq           = lazy(() => import("@/pages/Faq"));
+const Settings      = lazy(() => import("@/pages/Settings"));
+const Blog          = lazy(() => import("@/pages/Blog"));
+const BlogPost      = lazy(() => import("@/pages/BlogPost"));
+const TikTokMp3     = lazy(() => import("@/pages/TikTokMp3"));
+const TikTokStories = lazy(() => import("@/pages/TikTokStories"));
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 60 * 1000,
+      retry: 1,
+    },
+  },
+});
+
+// Minimal fallback — no flash, just blank space
+function PageFallback() {
+  return <div className="min-h-[60vh]" />;
+}
 
 function Router() {
   return (
     <AppLayout>
-      <Switch>
-        <Route path="/" component={Home} />
-        <Route path="/blog" component={Blog} />
-        <Route path="/blog/:slug" component={BlogPost} />
-        <Route path="/faq" component={Faq} />
-        <Route path="/settings" component={Settings} />
-        <Route path="/privacy" component={Privacy} />
-        <Route path="/terms" component={Terms} />
-        <Route path="/disclaimer" component={Disclaimer} />
-        <Route path="/dmca" component={Dmca} />
-        <Route path="/download-tiktok-mp3" component={TikTokMp3} />
-        <Route path="/download-tiktok-stories" component={TikTokStories} />
-        <Route component={NotFound} />
-      </Switch>
+      <Suspense fallback={<PageFallback />}>
+        <Switch>
+          <Route path="/" component={Home} />
+          <Route path="/blog" component={Blog} />
+          <Route path="/blog/:slug" component={BlogPost} />
+          <Route path="/faq" component={Faq} />
+          <Route path="/settings" component={Settings} />
+          <Route path="/privacy" component={Privacy} />
+          <Route path="/terms" component={Terms} />
+          <Route path="/disclaimer" component={Disclaimer} />
+          <Route path="/dmca" component={Dmca} />
+          <Route path="/download-tiktok-mp3" component={TikTokMp3} />
+          <Route path="/download-tiktok-stories" component={TikTokStories} />
+          <Route component={NotFound} />
+        </Switch>
+      </Suspense>
     </AppLayout>
   );
 }

@@ -47,8 +47,9 @@ export function HeroSection({
   return (
     <section className="w-full pt-20 pb-16 px-4 text-center flex flex-col items-center">
       <motion.div
-        initial={{ opacity: 0, y: -20 }}
+        initial={{ opacity: 0, y: -12 }}
         animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.25 }}
         className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full glass mb-8"
       >
         <span className="text-xs font-bold tracking-wider text-white/90">
@@ -57,9 +58,9 @@ export function HeroSection({
       </motion.div>
 
       <motion.h1
-        initial={{ opacity: 0, y: 20 }}
+        initial={{ opacity: 0, y: 14 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.1 }}
+        transition={{ duration: 0.28, delay: 0.05 }}
         className="text-4xl md:text-6xl lg:text-7xl font-extrabold mb-6 max-w-5xl mx-auto leading-tight tracking-tight"
       >
         Download Videos From <br className="hidden md:block" />
@@ -67,9 +68,9 @@ export function HeroSection({
       </motion.h1>
 
       <motion.p
-        initial={{ opacity: 0, y: 20 }}
+        initial={{ opacity: 0, y: 14 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.2 }}
+        transition={{ duration: 0.28, delay: 0.1 }}
         className="text-lg md:text-xl text-muted-foreground mb-10 max-w-2xl mx-auto"
       >
         The fastest, most reliable video downloader. No watermarks, no
@@ -78,9 +79,9 @@ export function HeroSection({
 
       {/* Platform chips */}
       <motion.div
-        initial={{ opacity: 0, scale: 0.95 }}
+        initial={{ opacity: 0, scale: 0.97 }}
         animate={{ opacity: 1, scale: 1 }}
-        transition={{ delay: 0.3 }}
+        transition={{ duration: 0.25, delay: 0.14 }}
         className="flex flex-wrap justify-center gap-3 mb-10"
       >
         {PLATFORMS.map((p) => {
@@ -101,9 +102,9 @@ export function HeroSection({
 
       {/* Main Card */}
       <motion.div
-        initial={{ opacity: 0, y: 20 }}
+        initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.4 }}
+        transition={{ duration: 0.3, delay: 0.18 }}
         className="max-w-3xl mx-auto w-full glass rounded-3xl p-4 md:p-6 mb-8 shadow-2xl relative overflow-hidden"
       >
         <div className="absolute inset-0 bg-gradient-to-r from-primary/10 to-secondary/10 pointer-events-none" />

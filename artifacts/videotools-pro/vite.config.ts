@@ -57,6 +57,33 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
+    target: "es2020",
+    cssCodeSplit: true,
+    minify: "terser",
+    terserOptions: {
+      compress: {
+        drop_console: true,
+        drop_debugger: true,
+        pure_funcs: ["console.log", "console.info"],
+      },
+    },
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // Core React — always needed
+          "react-vendor": ["react", "react-dom"],
+          // Router
+          "router":       ["wouter"],
+          // Animation library — heavy, separate chunk
+          "framer":       ["framer-motion"],
+          // Query
+          "query":        ["@tanstack/react-query"],
+          // Icons
+          "icons":        ["lucide-react"],
+        },
+      },
+    },
+    chunkSizeWarningLimit: 800,
   },
   server: {
     port,
@@ -66,10 +93,25 @@ export default defineConfig({
     fs: {
       strict: true,
     },
+    // Enable HMR with faster rebuild
+    hmr: {
+      overlay: false,
+    },
   },
   preview: {
     port,
     host: "0.0.0.0",
     allowedHosts: true,
+  },
+  // Optimize dependency pre-bundling
+  optimizeDeps: {
+    include: [
+      "react",
+      "react-dom",
+      "wouter",
+      "@tanstack/react-query",
+      "framer-motion",
+      "lucide-react",
+    ],
   },
 });
