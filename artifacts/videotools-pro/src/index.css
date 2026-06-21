@@ -89,12 +89,89 @@
 }
 
 .light .glass {
-  background: rgba(0,0,0,0.03);
-  border: 1px solid rgba(0,0,0,0.08);
+  background: rgba(0, 0, 0, 0.04);
+  border: 1px solid rgba(0, 0, 0, 0.09);
 }
 
-.light body {
-  color: hsl(240 20% 10%);
+/* ── Light mode: fix hardcoded white text ── */
+.light .text-white,
+.light .text-white\/90,
+.light .text-white\/80,
+.light .text-white\/70,
+.light .text-white\/60,
+.light .text-white\/50,
+.light .text-white\/40,
+.light .text-white\/30,
+.light .text-white\/20,
+.light .text-white\/10 {
+  color: hsl(240 20% 15%) !important;
+}
+
+/* hover text-white states */
+.light .hover\:text-white:hover,
+.light .group:hover .group-hover\:text-white {
+  color: hsl(240 20% 5%) !important;
+}
+
+/* placeholder text */
+.light .placeholder\:text-white\/40::placeholder {
+  color: hsl(240 15% 55%) !important;
+}
+
+/* ── Light mode: fix hardcoded dark/transparent backgrounds ── */
+.light .bg-black\/50,
+.light .bg-black\/40,
+.light .bg-black\/30 {
+  background-color: rgba(0, 0, 0, 0.05) !important;
+}
+
+.light .bg-white\/5  { background-color: rgba(0, 0, 0, 0.04) !important; }
+.light .bg-white\/10 { background-color: rgba(0, 0, 0, 0.07) !important; }
+.light .bg-white\/20 { background-color: rgba(0, 0, 0, 0.10) !important; }
+
+.light .hover\:bg-white\/5:hover  { background-color: rgba(0, 0, 0, 0.05) !important; }
+.light .hover\:bg-white\/10:hover { background-color: rgba(0, 0, 0, 0.08) !important; }
+
+/* ── Light mode: fix hardcoded white borders ── */
+.light .border-white\/10 { border-color: rgba(0, 0, 0, 0.10) !important; }
+.light .border-white\/20 { border-color: rgba(0, 0, 0, 0.15) !important; }
+.light .border-white\/30 { border-color: rgba(0, 0, 0, 0.20) !important; }
+
+.light .hover\:border-white\/30:hover { border-color: rgba(0, 0, 0, 0.25) !important; }
+
+/* ── Light mode: navbar and layout ── */
+.light header {
+  background-color: rgba(255, 255, 255, 0.85) !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+.light footer {
+  background-color: #f5f5f7 !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+/* ── Light mode: input fields ── */
+.light input[type="text"],
+.light input[type="url"] {
+  background-color: rgba(255, 255, 255, 0.9) !important;
+  color: hsl(240 20% 10%) !important;
+  border-color: rgba(0, 0, 0, 0.15) !important;
+}
+
+.light input[type="text"]::placeholder,
+.light input[type="url"]::placeholder {
+  color: hsl(240 15% 55%) !important;
+}
+
+/* ── Light mode: shadow adjustments ── */
+.light .shadow-\[0_0_20px_rgba\(108\,99\,255\,0\.4\)\] {
+  box-shadow: 0 0 20px rgba(108, 99, 255, 0.2) !important;
+}
+
+/* ── Light mode: bg-background with opacity ── */
+.light .bg-background\/80,
+.light .bg-background\/95 {
+  background-color: rgba(250, 250, 250, 0.9) !important;
 }
 
 @layer base {
