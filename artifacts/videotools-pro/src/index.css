@@ -63,6 +63,40 @@
   --radius: 0.75rem;
 }
 
+.light {
+  --background: 0 0% 98%; /* #fafafa */
+  --foreground: 240 20% 10%; /* #141420 */
+  --muted: rgba(0,0,0,0.05);
+  --muted-foreground: 240 8% 40%;
+  --primary: 243 100% 60%; /* #5046e4 */
+  --primary-foreground: 0 0% 100%;
+  --secondary: 195 100% 40%;
+  --secondary-foreground: 0 0% 100%;
+  --accent: rgba(0,0,0,0.04);
+  --accent-foreground: 240 20% 10%;
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 100%;
+  --card: rgba(0,0,0,0.03);
+  --card-foreground: 240 20% 10%;
+  --card-border: rgba(0,0,0,0.08);
+  --popover: rgba(255,255,255,0.98);
+  --popover-foreground: 240 20% 10%;
+  --popover-border: rgba(0,0,0,0.1);
+  --border: rgba(0,0,0,0.1);
+  --input: rgba(0,0,0,0.08);
+  --ring: 243 100% 60%;
+  --radius: 0.75rem;
+}
+
+.light .glass {
+  background: rgba(0,0,0,0.03);
+  border: 1px solid rgba(0,0,0,0.08);
+}
+
+.light body {
+  color: hsl(240 20% 10%);
+}
+
 @layer base {
   * {
     @apply border-border;

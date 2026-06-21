@@ -1,6 +1,7 @@
 import { Link, useLocation } from "wouter";
 import { useState } from "react";
-import { Menu, X } from "lucide-react";
+import { Menu, X, Sun, Moon } from "lucide-react";
+import { useTheme } from "@/lib/theme";
 
 function Logo() {
   return (
@@ -49,6 +50,23 @@ function NavLink({ href, children }: { href: string; children: React.ReactNode }
   );
 }
 
+function ThemeToggle() {
+  const { theme, toggle } = useTheme();
+  return (
+    <button
+      onClick={toggle}
+      aria-label="Toggle theme"
+      className="p-2 rounded-xl border border-white/10 dark:border-white/10 light:border-black/10 bg-white/5 dark:bg-white/5 hover:bg-white/10 dark:hover:bg-white/10 transition-colors"
+    >
+      {theme === "dark" ? (
+        <Sun className="w-4 h-4 text-yellow-300" />
+      ) : (
+        <Moon className="w-4 h-4 text-slate-600" />
+      )}
+    </button>
+  );
+}
+
 function Navbar() {
   const [open, setOpen] = useState(false);
 
@@ -76,13 +94,16 @@ function Navbar() {
           ))}
         </nav>
 
-        <button
-          className="md:hidden p-2 text-white/70 hover:text-white transition-colors"
-          onClick={() => setOpen((v) => !v)}
-          aria-label="Toggle menu"
-        >
-          {open ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-        </button>
+        <div className="flex items-center gap-2">
+          <ThemeToggle />
+          <button
+            className="md:hidden p-2 text-white/70 hover:text-white dark:text-white/70 dark:hover:text-white transition-colors"
+            onClick={() => setOpen((v) => !v)}
+            aria-label="Toggle menu"
+          >
+            {open ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+          </button>
+        </div>
       </div>
 
       {open && (
